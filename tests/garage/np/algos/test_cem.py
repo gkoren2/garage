@@ -38,5 +38,6 @@ class TestCEM(TfGraphTestCase):
             trainer.setup(algo, env)
             rtn = trainer.train(n_epochs=10, batch_size=2048)
             assert rtn > 40
+            
 
             env.close()

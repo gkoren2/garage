@@ -49,7 +49,7 @@ def pearl_metaworld_ml10(ctxt=None,
                          embedding_batch_size=64,
                          embedding_mini_batch_size=64,
                          reward_scale=10.,
-                         use_gpu=False):
+                         use_gpu=True):
     """Train PEARL with ML10 environments.
 
     Args:
@@ -151,4 +151,5 @@ def pearl_metaworld_ml10(ctxt=None,
     trainer.train(n_epochs=num_epochs, batch_size=batch_size)
 
 
+# pearl_metaworld_ml10()
 pearl_metaworld_ml10()
