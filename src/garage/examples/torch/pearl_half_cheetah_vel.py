@@ -19,7 +19,7 @@ from garage.trainer import Trainer
 
 
 @click.command()
-@click.option('--num_epochs', default=500)
+@click.option('--num_epochs', default=100)
 @click.option('--num_train_tasks', default=100)
 @click.option('--num_test_tasks', default=100)
 @click.option('--encoder_hidden_size', default=200)

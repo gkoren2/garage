@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """This is an example to train a task with SAC algorithm written in PyTorch."""
 import click
+
 import numpy as np
 import torch
 from torch import nn
@@ -19,14 +20,26 @@ from garage.torch.q_functions import ContinuousMLPQFunction
 from garage.trainer import Trainer
 
 @click.command()
-@click.option('--task_dir', default=1)
-@click.option('--gpuid',default=0)
-@click.option('--num_epochs',default=2500)
-@click.option('--seed',default=1)
+@click.option('--num_epochs', default=500)
+@click.option('--gpuid', default=1)
+@click.option('--vel', default=1)
+
+@click.option('--num_train_tasks', default=100)
+@click.option('--num_test_tasks', default=100)
+@click.option('--encoder_hidden_size', default=200)
+@click.option('--net_size', default=300)
+@click.option('--num_steps_per_epoch', default=2000)
+@click.option('--num_initial_steps', default=2000)
+@click.option('--num_steps_prior', default=400)
+@click.option('--num_extra_rl_steps_posterior', default=600)
+@click.option('--batch_size', default=256)
+@click.option('--embedding_batch_size', default=100)
+@click.option('--embedding_mini_batch_size', default=100)
+@click.option('--max_episode_length', default=200)
+
 
 @wrap_experiment(snapshot_mode='last')
-def sac_half_cheetah_dir(ctxt=None, task_dir=1, num_epochs=2500,
-                         gpuid=0,seed=1):
+def sac_half_cheetah_vel(ctxt=None, seed=1):
     """Set up environment and algorithm and run the task.
 
     Args:
@@ -38,8 +51,7 @@ def sac_half_cheetah_dir(ctxt=None, task_dir=1, num_epochs=2500,
     """
     deterministic.set_seed(seed)
     trainer = Trainer(snapshot_config=ctxt)
-    task = {'direction': task_dir}
-    env = normalize(GymEnv(HalfCheetahDirEnv(task), max_episode_length=200),
+    env = normalize(GymEnv(HalfCheetahDirEnv(), max_episode_length=200),
                     expected_action_scale=1.)
 
 
@@ -86,14 +98,14 @@ def sac_half_cheetah_dir(ctxt=None, task_dir=1, num_epochs=2500,
               steps_per_epoch=1)
 
     if torch.cuda.is_available():
-        set_gpu_mode(True,gpu_id=gpuid)
+        set_gpu_mode(True,gpu_id=1)
     else:
         set_gpu_mode(False)
     sac.to()
     trainer.setup(algo=sac, env=env)
     # trainer.train(n_epochs=2500, batch_size=1000,store_episodes=True)
-    trainer.train(n_epochs=num_epochs, batch_size=1000,store_episodes=True)
+    trainer.train(n_epochs=2500, batch_size=1000,store_episodes=True)
 
 
 s = np.random.randint(0, 1000)
-sac_half_cheetah_dir()
+sac_half_cheetah_dir(seed=521)

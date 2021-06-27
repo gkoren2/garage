@@ -9,6 +9,7 @@ from garage.envs import GymEnv, normalize
 from garage.envs.mujoco import HalfCheetahDirEnv
 from garage.experiment import MetaEvaluator
 from garage.experiment.deterministic import set_seed
+from garage.torch import set_gpu_mode
 from garage.experiment.task_sampler import SetTaskSampler
 from garage.sampler import RaySampler
 from garage.torch.algos import MAMLPPO
