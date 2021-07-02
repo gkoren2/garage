@@ -20,14 +20,14 @@ from garage.torch.q_functions import ContinuousMLPQFunction
 from garage.trainer import Trainer
 
 @click.command()
-@click.option('--num_epochs', default=10)
+@click.option('--num_epochs', default=2500)
 @click.option('--gpuid', default=0)
-@click.option('--task_vel', type=float,default=1.0)
+@click.option('--task_id', default=1)
 @click.option('--seed',default=1)
 
 
 @wrap_experiment(snapshot_mode='last')
-def sac_half_cheetah_vel(ctxt=None, task_vel=1, num_epochs=2500,
+def sac_half_cheetah_vel(ctxt=None, task_id=1, num_epochs=2500,
                          gpuid=0,seed=1):
     """Set up environment and algorithm and run the task.
 
@@ -40,6 +40,8 @@ def sac_half_cheetah_vel(ctxt=None, task_vel=1, num_epochs=2500,
     """
     deterministic.set_seed(seed)
     trainer = Trainer(snapshot_config=ctxt)
+    vel_step=0.075
+    task_vel = task_id*vel_step
     task = {'velocity': task_vel}
     print(f'training on task velocity {task_vel}')
 
