@@ -39,6 +39,7 @@ def sac_half_cheetah_dir(ctxt=None, task_dir=1, num_epochs=2500,
     deterministic.set_seed(seed)
     trainer = Trainer(snapshot_config=ctxt)
     task = {'direction': task_dir}
+    print(f'training on task {task}')
     env = normalize(GymEnv(HalfCheetahDirEnv(task), max_episode_length=200),
                     expected_action_scale=1.)
 
