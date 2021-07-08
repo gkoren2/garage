@@ -9,7 +9,7 @@ from torch.nn import functional as F
 
 from garage import wrap_experiment
 from garage.envs import GymEnv, normalize
-from garage.envs.mujoco import HalfCheetahVelEnv
+from garage.envs.dm_control import DMControlEnv
 from garage.experiment import deterministic
 from garage.replay_buffer import PathBuffer
 from garage.sampler import FragmentWorker, LocalSampler
@@ -22,13 +22,14 @@ from garage.trainer import Trainer
 @click.command()
 @click.option('--num_epochs', default=500)
 @click.option('--gpuid', default=0)
-@click.option('--task_id', default=1)
+@click.option('--domain_name', type=str,default='cartpole')
+@click.option('--task_name', type=str,default='swingup')
 @click.option('--seed',default=1)
 
 
 @wrap_experiment(snapshot_mode='gap',snapshot_gap=20)
-def sac_half_cheetah_vel(ctxt=None, task_id=1, num_epochs=500,
-                         gpuid=0,seed=1):
+def sac_dm_control(ctxt=None, domain_name='cartpole',task_name='swingup',
+                   num_epochs=500, gpuid=0,seed=1):
     """Set up environment and algorithm and run the task.
 
     Args:
@@ -40,13 +41,12 @@ def sac_half_cheetah_vel(ctxt=None, task_id=1, num_epochs=500,
     """
     deterministic.set_seed(seed)
     trainer = Trainer(snapshot_config=ctxt)
-    vel_step=0.075
-    task_vel = task_id*vel_step
-    task = {'velocity': task_vel}
-    print(f'training on task velocity {task_vel}')
 
-    env = normalize(GymEnv(HalfCheetahVelEnv(task), max_episode_length=200),
-                    expected_action_scale=1.)
+
+    env = DMControlEnv.from_suite(domain_name, task_name)
+
+    # env = normalize(GymEnv(HalfCheetahVelEnv(task), max_episode_length=200),
+    #                 expected_action_scale=1.)
 
 
     policy = TanhGaussianMLPPolicy(
@@ -96,8 +96,7 @@ def sac_half_cheetah_vel(ctxt=None, task_id=1, num_epochs=500,
         set_gpu_mode(False)
     sac.to()
     trainer.setup(algo=sac, env=env)
-    # trainer.train(n_epochs=2500, batch_size=1000,store_episodes=True)
     trainer.train(n_epochs=num_epochs, batch_size=1000,store_episodes=True)
 
 
-sac_half_cheetah_vel()
+sac_dm_control()
