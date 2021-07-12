@@ -188,7 +188,8 @@ class DMControlEnv(Environment):
         """Close the environment."""
         if self._viewer:
             self._viewer.close()
-        self._env.close()
+        if self._env is not None:
+            self._env.close()
         self._viewer = None
         self._env = None
 
