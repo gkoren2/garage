@@ -11,8 +11,10 @@ import torch.nn as nn
 import copy
 import garage
 from garage.experiment import Snapshotter
-from garage.torch import NonLinearity
+from garage.torch import NonLinearity,set_gpu_mode,global_device,state_dict_to
 from torch.nn import functional as F
+
+from garage import rollout
 
 
 def parse_cmd_line():
@@ -383,10 +385,15 @@ class UncWgtCritic:
                 tau * param.data + (1 - tau) * target_param.data
             )
 
-    def fit(self,obs,action,reward,next_obs,not_done,action_pred):
+    def fit(self,dataset,policy):
         # extract the relevant items from the experience buffer
+        obs, action, reward, next_obs, not_done = tuple([v for k,v in dataset.items()])
         train_set_size = len(obs)
         n_steps = (self.n_epochs * train_set_size) // self.batch_size
+
+        # move the policy to the device
+        # policy.load_state_dict(state_dict_to(policy.state_dict(), self.device))
+        policy = policy.to(self.device)
 
         for step in range(n_steps):
             # sample from the train set
@@ -396,7 +403,8 @@ class UncWgtCritic:
             reward_tensor = torch.FloatTensor(reward[idxs]).to(self.device)
             action_tensor = torch.FloatTensor(action[idxs]).to(self.device)
             not_done_tensor = torch.FloatTensor(not_done[idxs]).to(self.device)
-            action_pred_tensor = torch.FloatTensor(action_pred[idxs]).to(self.device)
+            # action_pred_tensor = torch.FloatTensor(action_pred[idxs]).to(self.device)
+            action_pred_tensor = torch.FloatTensor(policy.predict(next_obs_tensor)[0]).to(self.device)
 
             self._update_on_batch(obs_tensor, action_tensor, reward_tensor, next_obs_tensor, not_done_tensor,
                                   action_pred_tensor, step)
@@ -417,26 +425,42 @@ class UncWgtCritic:
         return np.mean(Q_preds),np.std(Q_preds)
 
 
-def unc_aware_policy_eval(policy,Dataset,params):
+def unc_aware_policy_eval(policy,Dataset,env_spec,device):
     value = None
+    critic = UncWgtCritic(env_spec,device)
+    critic.fit(Dataset,policy)
+
 
     return value
 
 
 
 def main():
-    args = parse_cmd_line()
-
+    # args = parse_cmd_line()
+    if torch.cuda.is_available():
+        set_gpu_mode(True,gpu_id=0)
+    else:
+        set_gpu_mode(False)
+    device = global_device()
 
     exp_dir = os.path.join(proj_root_dir,'_labexp','data','local','experiment')
-    snp_folder = os.path.join(exp_dir, 'sac_half_cheetah_vel')
-    policies_itr = {'poor': 40, 'bad': 60, 'good': 160, 'expert': 460}
+    # snp_folder = os.path.join(exp_dir, 'sac_half_cheetah_vel')
+    # policies_itr = {'poor': 40, 'bad': 60, 'good': 160, 'expert': 460}
+    # working on gpu15
+    snp_folder = os.path.join(os.path.expanduser('~'),'labexp_data','sac_half_cheetah_vel')
+    policies_itr = {'poor': 60, 'bad': 80, 'good': 120, 'expert': 460}
 
     snapshotter = Snapshotter()
-    policies = {k: snapshotter.load(snp_folder, itr=itr)['algo'].policy for
-                k, itr in policies_itr.items()}
+    # policies = {k: snapshotter.load(snp_folder, itr=itr)['algo'].policy for
+    #             k, itr in policies_itr.items()}
 
-    Dataset = snapshotter.load(snp_folder, itr=480)['algo'].replay_buffer
+    policy = snapshotter.load(snp_folder, itr=460)['algo'].policy
+
+    algo480 = snapshotter.load(snp_folder, itr=480)['algo']
+    Dataset = algo480.replay_buffer._buffer
+    value = unc_aware_policy_eval(policy,Dataset,algo480.env_spec,device)
+
+
 
 
 
@@ -444,4 +468,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
     sys.path.remove(proj_root_dir)
