@@ -285,17 +285,17 @@ class ContinuousMLPQFunctionDropout(MLPModuleDropout):
                            **kwargs)
 
     # pylint: disable=arguments-differ
-    def forward(self, observations, actions):
-        """Return Q-value(s).
-
-        Args:
-            observations (np.ndarray): observations.
-            actions (np.ndarray): actions.
-
-        Returns:
-            torch.Tensor: Output value
-        """
-        return super().forward(torch.cat([observations, actions], 1))
+    # def forward(self, observations, actions):
+    #     """Return Q-value(s).
+    #
+    #     Args:
+    #         observations (np.ndarray): observations.
+    #         actions (np.ndarray): actions.
+    #
+    #     Returns:
+    #         torch.Tensor: Output value
+    #     """
+    #     return super().forward(torch.cat([observations, actions], 1))
 #endregion
 ##########################################
 class UncWgtCritic:
@@ -357,11 +357,11 @@ class UncWgtCritic:
         self.critic.train(training)
 
 
-    def _update_on_batch(self,obs,action, reward, next_obs, not_done,action_pred,step):
+    def _update_on_batch(self,obs,action, reward, next_obs, done,action_pred,step):
         with torch.no_grad():
             next_obs_action_pred = torch.cat([next_obs, action_pred], dim=1)
             target_Q = self.critic_target(next_obs_action_pred)
-            target_Q = reward + (not_done * self.discount * target_Q)
+            target_Q = reward + ((1-done) * self.discount * target_Q)
 
         # get current Q estimates
         obs_action = torch.cat([obs, action], dim=1)
@@ -387,7 +387,7 @@ class UncWgtCritic:
 
     def fit(self,dataset,policy):
         # extract the relevant items from the experience buffer
-        obs, action, reward, next_obs, not_done = tuple([v for k,v in dataset.items()])
+        obs, action, reward, next_obs, done = tuple([v for k,v in dataset.items()])
         train_set_size = len(obs)
         n_steps = (self.n_epochs * train_set_size) // self.batch_size
 
@@ -402,11 +402,11 @@ class UncWgtCritic:
             next_obs_tensor = torch.FloatTensor(next_obs[idxs]).to(self.device)
             reward_tensor = torch.FloatTensor(reward[idxs]).to(self.device)
             action_tensor = torch.FloatTensor(action[idxs]).to(self.device)
-            not_done_tensor = torch.FloatTensor(not_done[idxs]).to(self.device)
+            done_tensor = torch.FloatTensor(done[idxs]).to(self.device)
             # action_pred_tensor = torch.FloatTensor(action_pred[idxs]).to(self.device)
-            action_pred_tensor = torch.FloatTensor(policy.predict(next_obs_tensor)[0]).to(self.device)
+            action_pred_tensor = torch.FloatTensor(policy.get_actions(next_obs_tensor)[0]).to(self.device)
 
-            self._update_on_batch(obs_tensor, action_tensor, reward_tensor, next_obs_tensor, not_done_tensor,
+            self._update_on_batch(obs_tensor, action_tensor, reward_tensor, next_obs_tensor, done_tensor,
                                   action_pred_tensor, step)
 
             #update the target
@@ -426,10 +426,11 @@ class UncWgtCritic:
 
 
 def unc_aware_policy_eval(policy,Dataset,env_spec,device):
-    value = None
+    value = 0
     critic = UncWgtCritic(env_spec,device)
     critic.fit(Dataset,policy)
-
+    # todo : now that we have a critic, extract a summary statistics for the
+    #  dataset
 
     return value
 
@@ -457,8 +458,11 @@ def main():
     policy = snapshotter.load(snp_folder, itr=460)['algo'].policy
 
     algo480 = snapshotter.load(snp_folder, itr=480)['algo']
-    Dataset = algo480.replay_buffer._buffer
-    value = unc_aware_policy_eval(policy,Dataset,algo480.env_spec,device)
+    # need to leave only the valid samples in the dataset
+    n_trans_stored = algo480.replay_buffer.n_transitions_stored
+    dataset = {k: v[:n_trans_stored] for k, v in
+               algo480.replay_buffer._buffer.items()}
+    value = unc_aware_policy_eval(policy,dataset,algo480.env_spec,device)
 
 
 
