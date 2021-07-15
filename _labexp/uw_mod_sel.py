@@ -5,6 +5,7 @@ if proj_root_dir not in sys.path:
     sys.path.insert(0,proj_root_dir)
 ######################
 import argparse
+import time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -13,9 +14,9 @@ import garage
 from garage.experiment import Snapshotter
 from garage.torch import NonLinearity,set_gpu_mode,global_device,state_dict_to
 from torch.nn import functional as F
-
+import cloudpickle
 from garage import rollout
-
+from tqdm import tqdm
 
 def parse_cmd_line():
 
@@ -394,7 +395,7 @@ class UncWgtCritic:
         # move the policy to the device
         # policy.load_state_dict(state_dict_to(policy.state_dict(), self.device))
         policy = policy.to(self.device)
-
+        print(f'training for {n_steps}')
         for step in range(n_steps):
             # sample from the train set
             idxs = np.random.randint(0,train_set_size,size=self.batch_size)
@@ -422,16 +423,44 @@ class UncWgtCritic:
         action_tensor = torch.FloatTensor(action).to(self.device)
         obs_action = torch.cat([obs_tensor, action_tensor], dim=1)
         Q_preds=np.array([self.critic(obs_action).data.cpu().numpy() for _ in range(n_sim)]).squeeze()
-        return np.mean(Q_preds),np.std(Q_preds)
+        q_mean = np.mean(Q_preds,axis=0)
+        q_std = np.std(Q_preds,axis=0)
+        return q_mean,q_std
 
 
-def unc_aware_policy_eval(policy,Dataset,env_spec,device):
+def unc_aware_policy_eval(policy,dataset,env_spec,device,exp_dir):
     value = 0
-    critic = UncWgtCritic(env_spec,device)
-    critic.fit(Dataset,policy)
-    # todo : now that we have a critic, extract a summary statistics for the
-    #  dataset
+    critic_file_name = os.path.join(exp_dir, 'critic.pkl')
 
+
+    if os.path.exists(critic_file_name):
+        print('found a pretrained critic. loading it')
+        with open(critic_file_name, 'rb') as file:
+            critic =  cloudpickle.load(file)
+    else:
+        print('creating and training a critic')
+        critic = UncWgtCritic(env_spec,device,n_epochs=20)
+        critic.fit(dataset,policy)
+        # save the critic
+        with open(critic_file_name, 'wb') as file:
+            cloudpickle.dump(critic, file)
+    # now that we have a critic, extract a summary statistics for the dataset
+    print('evaluating the policy...')
+    obs=dataset['observation']
+    act=dataset['action']
+    batch_size = 10000
+    q_mean_all=[]
+    q_std_all=[]
+    n_obs = len(obs)
+    for l in tqdm(range(0,n_obs,batch_size)):
+        q_mean,q_std = critic.predict(obs[l:l+batch_size],act[l:l+batch_size])
+        q_mean_all.append(q_mean)
+        q_std_all.append(q_std)
+    q_mean_all = np.concatenate(q_mean_all,axis=0)
+    q_std_all = np.concatenate(q_std_all, axis=0)
+    print(f'average q_mean = {q_mean_all.mean()} , average q_std = {q_std_all.mean()} ')
+    # statistic summary : the average (over all states) of uncertainty weighted q values
+    value=np.mean(q_mean_all-q_std_all)
     return value
 
 
@@ -445,6 +474,8 @@ def main():
     device = global_device()
 
     exp_dir = os.path.join(proj_root_dir,'_labexp','data','local','experiment')
+    # exp_dir = os.path.join(exp_dir,'uw_mod_sel'+ '-' + time.strftime("%d-%m-%Y_%H-%M-%S"))
+
     # snp_folder = os.path.join(exp_dir, 'sac_half_cheetah_vel')
     # policies_itr = {'poor': 40, 'bad': 60, 'good': 160, 'expert': 460}
     # working on gpu15
@@ -455,14 +486,20 @@ def main():
     # policies = {k: snapshotter.load(snp_folder, itr=itr)['algo'].policy for
     #             k, itr in policies_itr.items()}
 
-    policy = snapshotter.load(snp_folder, itr=460)['algo'].policy
 
-    algo480 = snapshotter.load(snp_folder, itr=480)['algo']
+    policy_itr = 460
+    dataset_itr = 480    # s for source, t for target
+    exp_dir = os.path.join(exp_dir,f'uw_mod_sel-p{policy_itr}-s{dataset_itr}')
+    os.makedirs(exp_dir, exist_ok=True)
+
+    policy = snapshotter.load(snp_folder, itr=policy_itr)['algo'].policy
+    algo480 = snapshotter.load(snp_folder, itr=dataset_itr)['algo']
     # need to leave only the valid samples in the dataset
     n_trans_stored = algo480.replay_buffer.n_transitions_stored
     dataset = {k: v[:n_trans_stored] for k, v in
                algo480.replay_buffer._buffer.items()}
-    value = unc_aware_policy_eval(policy,dataset,algo480.env_spec,device)
+    value = unc_aware_policy_eval(policy,dataset,algo480.env_spec,device,exp_dir)
+    print(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
 
 
 
