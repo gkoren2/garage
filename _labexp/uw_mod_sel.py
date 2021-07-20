@@ -22,7 +22,7 @@ def parse_cmd_line():
 
     parser = argparse.ArgumentParser()
     # parser.add_argument('exparams', type=str, help='experiment params file path')
-    # parser.add_argument('-d','--gpuid',type=str,default='',help='gpu id or "cpu"')
+    parser.add_argument('-d','--gpuid',type=str,default='',help='gpu id or "cpu"')
     # parser.add_argument('--num_experiments', help='number of experiments', default=1,type=int)
     # parser.add_argument('--seed', help='Random generator seed', type=int, default=1)
     # parser.add_argument("--num-threads", help="Number of threads for PyTorch (-1 to use default)", default=-1, type=int)
@@ -312,7 +312,7 @@ class UncWgtCritic:
                  layer_norm = False,
                  dropout_prob=0.2,
                  activation='relu',
-                 log_interval=10):
+                 log_interval=1000):
         self.env_spec = env_spec
         self.lr = lr
         self.dropout_prob= dropout_prob
@@ -393,7 +393,6 @@ class UncWgtCritic:
         n_steps = (self.n_epochs * train_set_size) // self.batch_size
 
         # move the policy to the device
-        # policy.load_state_dict(state_dict_to(policy.state_dict(), self.device))
         policy = policy.to(self.device)
         print(f'training for {n_steps}')
         for step in range(n_steps):
@@ -404,7 +403,6 @@ class UncWgtCritic:
             reward_tensor = torch.FloatTensor(reward[idxs]).to(self.device)
             action_tensor = torch.FloatTensor(action[idxs]).to(self.device)
             done_tensor = torch.FloatTensor(done[idxs]).to(self.device)
-            # action_pred_tensor = torch.FloatTensor(action_pred[idxs]).to(self.device)
             action_pred_tensor = torch.FloatTensor(policy.get_actions(next_obs_tensor)[0]).to(self.device)
 
             self._update_on_batch(obs_tensor, action_tensor, reward_tensor, next_obs_tensor, done_tensor,
@@ -487,18 +485,18 @@ def main():
     #             k, itr in policies_itr.items()}
 
 
-    policy_itr = 460
+    policy_itr = 120
     dataset_itr = 480    # s for source, t for target
     exp_dir = os.path.join(exp_dir,f'uw_mod_sel-p{policy_itr}-s{dataset_itr}')
     os.makedirs(exp_dir, exist_ok=True)
 
     policy = snapshotter.load(snp_folder, itr=policy_itr)['algo'].policy
-    algo480 = snapshotter.load(snp_folder, itr=dataset_itr)['algo']
+    data_snapshot = snapshotter.load(snp_folder, itr=dataset_itr)['algo']
     # need to leave only the valid samples in the dataset
-    n_trans_stored = algo480.replay_buffer.n_transitions_stored
+    n_trans_stored = data_snapshot.replay_buffer.n_transitions_stored
     dataset = {k: v[:n_trans_stored] for k, v in
-               algo480.replay_buffer._buffer.items()}
-    value = unc_aware_policy_eval(policy,dataset,algo480.env_spec,device,exp_dir)
+               data_snapshot.replay_buffer._buffer.items()}
+    value = unc_aware_policy_eval(policy,dataset,data_snapshot.env_spec,device,exp_dir)
     print(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
 
 
