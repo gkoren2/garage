@@ -11,6 +11,8 @@ import torch
 import torch.nn as nn
 import copy
 import garage
+from dowel import logger
+from garage import wrap_experiment
 from garage.experiment import Snapshotter
 from garage.torch import NonLinearity,set_gpu_mode,global_device,state_dict_to
 from torch.nn import functional as F
@@ -18,11 +20,19 @@ import cloudpickle
 from garage import rollout
 from tqdm import tqdm
 
-def parse_cmd_line():
 
+DATA_FOLDER = os.path.join(os.path.expanduser('~'),'labexp_data')
+
+def parse_cmd_line():
     parser = argparse.ArgumentParser()
-    # parser.add_argument('exparams', type=str, help='experiment params file path')
-    parser.add_argument('-d','--gpuid',type=str,default='',help='gpu id or "cpu"')
+    parser.add_argument('-p','--policies', type=str, nargs='+',
+                        help='path and snapshot numbers of the candidate policies',
+                        required=True)
+    parser.add_argument('-d','--val_dataset_path', type=str, nargs='+',
+                        help='path to the validation dataset snapshot',
+                        required=True)
+
+    parser.add_argument('--gpuid',type=int,default=0,help='gpu id or -1 for cpu')
     # parser.add_argument('--num_experiments', help='number of experiments', default=1,type=int)
     # parser.add_argument('--seed', help='Random generator seed', type=int, default=1)
     # parser.add_argument("--num-threads", help="Number of threads for PyTorch (-1 to use default)", default=-1, type=int)
@@ -299,6 +309,7 @@ class ContinuousMLPQFunctionDropout(MLPModuleDropout):
     #     return super().forward(torch.cat([observations, actions], 1))
 #endregion
 ##########################################
+#region Uncertainty Weighted Critic
 class UncWgtCritic:
     def __init__(self,env_spec,
                  device,
@@ -424,17 +435,17 @@ class UncWgtCritic:
         q_mean = np.mean(Q_preds,axis=0)
         q_std = np.std(Q_preds,axis=0)
         return q_mean,q_std
-
-
-def unc_aware_policy_eval(policy,dataset,env_spec,device,exp_dir):
+#endregion
+##########################################
+def unc_aware_policy_eval(policy,dataset,env_spec,device,critic_dir):
     value = 0
-    critic_file_name = os.path.join(exp_dir, 'critic.pkl')
+    critic_file_name = os.path.join(critic_dir, 'critic.pkl')
 
 
     if os.path.exists(critic_file_name):
         print('found a pretrained critic. loading it')
         with open(critic_file_name, 'rb') as file:
-            critic =  cloudpickle.load(file)
+            critic = cloudpickle.load(file)
     else:
         print('creating and training a critic')
         critic = UncWgtCritic(env_spec,device,n_epochs=20)
@@ -462,42 +473,41 @@ def unc_aware_policy_eval(policy,dataset,env_spec,device,exp_dir):
     return value
 
 
-
-def main():
+@wrap_experiment(snapshot_mode='last')
+def unc_wgt_policy_sel(ctxt=None,args=None):
     # args = parse_cmd_line()
-    if torch.cuda.is_available():
-        set_gpu_mode(True,gpu_id=0)
+    if args.gpuid>=0 and torch.cuda.is_available():
+        set_gpu_mode(True,gpu_id=args.gpuid)
     else:
         set_gpu_mode(False)
     device = global_device()
-
-    exp_dir = os.path.join(proj_root_dir,'_labexp','data','local','experiment')
+    logger.log(f'print from within the function ')
     # exp_dir = os.path.join(exp_dir,'uw_mod_sel'+ '-' + time.strftime("%d-%m-%Y_%H-%M-%S"))
 
     # snp_folder = os.path.join(exp_dir, 'sac_half_cheetah_vel')
     # policies_itr = {'poor': 40, 'bad': 60, 'good': 160, 'expert': 460}
     # working on gpu15
-    snp_folder = os.path.join(os.path.expanduser('~'),'labexp_data','sac_half_cheetah_vel')
+    policy_snp_folder = args.policies[0]
+    dataset_snp_folder = args.val_dataset_path[0]
     policies_itr = {'poor': 60, 'bad': 80, 'good': 120, 'expert': 460}
 
     snapshotter = Snapshotter()
     # policies = {k: snapshotter.load(snp_folder, itr=itr)['algo'].policy for
     #             k, itr in policies_itr.items()}
 
-
-    policy_itr = 120
-    dataset_itr = 480    # s for source, t for target
-    exp_dir = os.path.join(exp_dir,f'uw_mod_sel-p{policy_itr}-s{dataset_itr}')
-    os.makedirs(exp_dir, exist_ok=True)
-
-    policy = snapshotter.load(snp_folder, itr=policy_itr)['algo'].policy
-    data_snapshot = snapshotter.load(snp_folder, itr=dataset_itr)['algo']
+    policy_itr = int(args.policies[1])
+    dataset_itr = int(args.val_dataset_path[1])    # s for source, t for target
+    # exp_dir = os.path.join(ctxt.snapshot_dir,f'uw_mod_sel-p{policy_itr}-s{dataset_itr}')
+    # os.makedirs(exp_dir, exist_ok=True)
+    logger.log(f'Evaluating policy from {policy_snp_folder} itr_{policy_itr} on dataset {dataset_snp_folder} itr_{dataset_itr}')
+    policy = snapshotter.load(os.path.expanduser(policy_snp_folder), itr=policy_itr)['algo'].policy
+    data_snapshot = snapshotter.load(os.path.expanduser(dataset_snp_folder), itr=dataset_itr)['algo']
     # need to leave only the valid samples in the dataset
     n_trans_stored = data_snapshot.replay_buffer.n_transitions_stored
     dataset = {k: v[:n_trans_stored] for k, v in
                data_snapshot.replay_buffer._buffer.items()}
-    value = unc_aware_policy_eval(policy,dataset,data_snapshot.env_spec,device,exp_dir)
-    print(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
+    value = unc_aware_policy_eval(policy,dataset,data_snapshot.env_spec,device,ctxt.snapshot_dir)
+    logger.log(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
 
 
 
@@ -506,6 +516,21 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    args=parse_cmd_line()
+
+    # options can be a dict whose keys can be subset of:
+    # name = self.name,
+    # function = self.function,
+    # prefix = self.prefix,
+    # name_parameters = self.name_parameters,
+    # log_dir = self.log_dir,
+    # archive_launch_repo = self.archive_launch_repo,
+    # snapshot_gap = self.snapshot_gap,
+    # snapshot_mode = self.snapshot_mode,
+    # use_existing_dir = self.use_existing_dir,
+    # x_axis = self.x_axis,
+    # signature = self.__signature__
+    options = {'name':'uw_mod_sel'}
+    unc_wgt_policy_sel(options, args=args)
 
     sys.path.remove(proj_root_dir)
