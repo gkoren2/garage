@@ -11,10 +11,10 @@ import torch
 import torch.nn as nn
 import copy
 import garage
-from dowel import logger
-from garage import wrap_experiment
+from dowel import logger,tabular
+from garage import wrap_experiment, obtain_evaluation_episodes, StepType
 from garage.experiment import Snapshotter
-from garage.torch import NonLinearity,set_gpu_mode,global_device,state_dict_to
+from garage.torch import NonLinearity,set_gpu_mode,global_device
 from torch.nn import functional as F
 import cloudpickle
 from garage import rollout
@@ -29,8 +29,10 @@ def parse_cmd_line():
                         help='path and snapshot numbers of the candidate policies',
                         required=True)
     parser.add_argument('-d','--val_dataset_path', type=str, nargs='+',
-                        help='path to the validation dataset snapshot',
+                        help='path iteration [start sample] [end sample]',
                         required=True)
+    parser.add_argument('-c', '--trained_critic_path', help='Path to a pretrained critic to continue training',
+                        default='', type=str)
 
     parser.add_argument('--gpuid',type=int,default=0,help='gpu id or -1 for cpu')
     # parser.add_argument('--num_experiments', help='number of experiments', default=1,type=int)
@@ -382,7 +384,13 @@ class UncWgtCritic:
 
         if step % self.log_interval == 0:
         #     L.log('train_critic/loss', critic_loss, step)
-            print('train_critic/loss', critic_loss, step)
+        #     logger.log(f'step {step}: train_critic/loss {critic_loss}')
+            print(f'step {step}: train_critic/loss {critic_loss}')
+
+        #     tabular.record('train_critic/loss',critic_loss)
+        #     logger.log(tabular)
+        #     logger.dump_all(step)
+        #     tabular.clear()
 
         # Optimize the critic
         self.critic_optimizer.zero_grad()
@@ -405,7 +413,7 @@ class UncWgtCritic:
 
         # move the policy to the device
         policy = policy.to(self.device)
-        print(f'training for {n_steps}')
+        print(f'training for {n_steps} steps')
         for step in range(n_steps):
             # sample from the train set
             idxs = np.random.randint(0,train_set_size,size=self.batch_size)
@@ -437,40 +445,86 @@ class UncWgtCritic:
         return q_mean,q_std
 #endregion
 ##########################################
-def unc_aware_policy_eval(policy,dataset,env_spec,device,critic_dir):
-    value = 0
-    critic_file_name = os.path.join(critic_dir, 'critic.pkl')
+#region tools
+from garage.np import discount_cumsum
+def analyze_eval_episodes(batch, discount):
+    """Evaluate the performance of an algorithm on a batch of episodes.
 
+    Args:
+        itr (int): Iteration number.
+        batch (EpisodeBatch): The episodes to evaluate with.
+        discount (float): Discount value, from algorithm's property.
+        prefix (str): Prefix to add to all logged keys.
 
-    if os.path.exists(critic_file_name):
-        print('found a pretrained critic. loading it')
-        with open(critic_file_name, 'rb') as file:
-            critic = cloudpickle.load(file)
-    else:
-        print('creating and training a critic')
-        critic = UncWgtCritic(env_spec,device,n_epochs=20)
-        critic.fit(dataset,policy)
-        # save the critic
-        with open(critic_file_name, 'wb') as file:
-            cloudpickle.dump(critic, file)
-    # now that we have a critic, extract a summary statistics for the dataset
-    print('evaluating the policy...')
+    Returns:
+        numpy.ndarray: Undiscounted returns.
+
+    """
+    returns = []
+    undiscounted_returns = []
+    termination = []
+    success = []
+    for eps in batch.split():
+        returns.append(discount_cumsum(eps.rewards, discount))
+        undiscounted_returns.append(sum(eps.rewards))
+        termination.append(
+            float(
+                any(step_type == StepType.TERMINAL
+                    for step_type in eps.step_types)))
+        if 'success' in eps.env_infos:
+            success.append(float(eps.env_infos['success'].any()))
+
+    average_discounted_return = np.mean([rtn[0] for rtn in returns])
+
+    logger.log(f'NumEpisodes: {len(returns)}')
+    logger.log(f'AverageDiscountedReturn: {average_discounted_return}')
+    logger.log(f'AverageReturn: {np.mean(undiscounted_returns)}')
+    logger.log(f'StdReturn: {np.std(undiscounted_returns)}' )
+    # logger.log('MaxReturn', np.max(undiscounted_returns))
+    # logger.log('MinReturn', np.min(undiscounted_returns))
+    # logger.log('TerminationRate', np.mean(termination))
+    # if success:
+    #     logger.log('SuccessRate', np.mean(success))
+    return
+
+#endregion
+##########################################
+def eval_policy_with_uw_critic(policy,dataset,critic,device):
+    logger.log('doing offline evaluation on evaluation dataset using critic ...')
     obs=dataset['observation']
-    act=dataset['action']
+    # act=dataset['action']
     batch_size = 10000
     q_mean_all=[]
     q_std_all=[]
     n_obs = len(obs)
     for l in tqdm(range(0,n_obs,batch_size)):
-        q_mean,q_std = critic.predict(obs[l:l+batch_size],act[l:l+batch_size])
+        obs_tensor = torch.FloatTensor(obs[l:l+batch_size]).to(device)
+        policy_act = policy.get_actions(obs_tensor)[0]
+        q_mean,q_std = critic.predict(obs[l:l+batch_size],policy_act)
         q_mean_all.append(q_mean)
         q_std_all.append(q_std)
     q_mean_all = np.concatenate(q_mean_all,axis=0)
     q_std_all = np.concatenate(q_std_all, axis=0)
-    print(f'average q_mean = {q_mean_all.mean()} , average q_std = {q_std_all.mean()} ')
+    logger.log(f'average q_mean = {q_mean_all.mean()} , average q_std = {q_std_all.mean()} ')
     # statistic summary : the average (over all states) of uncertainty weighted q values
     value=np.mean(q_mean_all-q_std_all)
     return value
+
+
+def unc_aware_policy_eval(policy,dataset,env_spec,device,critic_dir):
+    critic_file_name = os.path.join(critic_dir, 'critic.pkl')
+    if os.path.exists(critic_file_name):
+        logger.log(f'loading critic from {critic_file_name}')
+        with open(critic_file_name, 'rb') as file:
+            critic = cloudpickle.load(file)
+    else:
+        logger.log('creating and training a critic')
+        critic = UncWgtCritic(env_spec,device,n_epochs=5,hidden_dims=[1024,1024])
+        critic.fit(dataset,policy)
+        # save the critic
+        with open(critic_file_name, 'wb') as file:
+            cloudpickle.dump(critic, file)
+    return eval_policy_with_uw_critic(policy,dataset,critic,device)
 
 
 @wrap_experiment(snapshot_mode='last')
@@ -489,7 +543,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     # working on gpu15
     policy_snp_folder = args.policies[0]
     dataset_snp_folder = args.val_dataset_path[0]
-    policies_itr = {'poor': 60, 'bad': 80, 'good': 120, 'expert': 460}
+    # policies_itr = {'poor': 60, 'bad': 80, 'good': 120, 'expert': 460}
 
     snapshotter = Snapshotter()
     # policies = {k: snapshotter.load(snp_folder, itr=itr)['algo'].policy for
@@ -497,22 +551,30 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
 
     policy_itr = int(args.policies[1])
     dataset_itr = int(args.val_dataset_path[1])    # s for source, t for target
-    # exp_dir = os.path.join(ctxt.snapshot_dir,f'uw_mod_sel-p{policy_itr}-s{dataset_itr}')
-    # os.makedirs(exp_dir, exist_ok=True)
     logger.log(f'Evaluating policy from {policy_snp_folder} itr_{policy_itr} on dataset {dataset_snp_folder} itr_{dataset_itr}')
-    policy = snapshotter.load(os.path.expanduser(policy_snp_folder), itr=policy_itr)['algo'].policy
-    data_snapshot = snapshotter.load(os.path.expanduser(dataset_snp_folder), itr=dataset_itr)['algo']
+    policy_snp = snapshotter.load(os.path.expanduser(policy_snp_folder), itr=policy_itr)
+    policy = policy_snp['algo'].policy
+    data_snapshot = snapshotter.load(os.path.expanduser(dataset_snp_folder), itr=dataset_itr)
+    env = data_snapshot['env']
+    replay_buffer = data_snapshot['algo'].replay_buffer
     # need to leave only the valid samples in the dataset
-    n_trans_stored = data_snapshot.replay_buffer.n_transitions_stored
-    dataset = {k: v[:n_trans_stored] for k, v in
-               data_snapshot.replay_buffer._buffer.items()}
-    value = unc_aware_policy_eval(policy,dataset,data_snapshot.env_spec,device,ctxt.snapshot_dir)
+    n_trans_stored = replay_buffer.n_transitions_stored
+    start_trans=0
+    if len(args.val_dataset_path) > 2:   # we're given a segment from the buffer
+        start_trans = int(args.val_dataset_path[2])
+    end_trans = n_trans_stored
+    if len(args.val_dataset_path) > 3:   # we're given a segment from the buffer
+        end_trans = int(args.val_dataset_path[3])
+    logger.log(f'selecting transitions {start_trans} to {end_trans} for the evaluation')
+    dataset = {k: v[start_trans:end_trans] for k, v in replay_buffer._buffer.items()}
+    critic_path = args.trained_critic_path or ctxt.snapshot_dir
+    value = unc_aware_policy_eval(policy,dataset,env.spec,device,critic_path)
     logger.log(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
 
-
-
-
-
+    logger.log('evaluating the policy on the target env for 100 episodes')
+    discount = policy_snp['algo']._discount
+    eval_episodes = obtain_evaluation_episodes(policy, env)
+    analyze_eval_episodes(eval_episodes,discount=discount)
 
 
 if __name__ == '__main__':
