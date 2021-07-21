@@ -519,7 +519,7 @@ def unc_aware_policy_eval(policy,dataset,env_spec,device,critic_dir):
             critic = cloudpickle.load(file)
     else:
         logger.log('creating and training a critic')
-        critic = UncWgtCritic(env_spec,device,n_epochs=5,hidden_dims=[1024,1024])
+        critic = UncWgtCritic(env_spec,device,n_epochs=20,hidden_dims=[1024,1024])
         critic.fit(dataset,policy)
         # save the critic
         with open(critic_file_name, 'wb') as file:
