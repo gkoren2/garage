@@ -31,6 +31,7 @@ def parse_cmd_line():
     parser.add_argument('-d','--val_dataset_path', type=str, nargs='+',
                         help='path iteration [start sample] [end sample]',
                         required=True)
+    parser.add_argument('--intc',action='store_true',help='use internal critic')
     parser.add_argument('-c', '--trained_critic_path', help='Path to a pretrained critic to continue training',
                         default='', type=str)
 
@@ -433,7 +434,6 @@ class UncWgtCritic:
 
         return self
 
-
     def predict(self,obs,action,n_sim=1000):
         self.critic.train()
         obs_tensor = torch.FloatTensor(obs).to(self.device)
@@ -489,10 +489,30 @@ def analyze_eval_episodes(batch, discount):
 
 #endregion
 ##########################################
-def eval_policy_with_uw_critic(policy,dataset,critic,device):
-    logger.log('doing offline evaluation on evaluation dataset using critic ...')
+
+def eval_policy_with_internal_critic(policy,dataset,critic,device):
+    logger.log('doing offline evaluation on evaluation dataset using internal critic ...')
     obs=dataset['observation']
-    # act=dataset['action']
+    batch_size = 10000
+    q_all=[]
+    n_obs = len(obs)
+    for l in tqdm(range(0,n_obs,batch_size)):
+        obs_tensor = torch.FloatTensor(obs[l:l+batch_size]).to(device)
+        policy_act_tensor = torch.FloatTensor(policy.get_actions(obs_tensor)[0]).to(device)
+        q = critic(obs_tensor,policy_act_tensor).data.cpu().numpy()
+        q_all.append(q)
+    q_all = np.array(q_all).flatten()
+    logger.log(f'average q_mean = {q_all.mean()} ')
+    # statistic summary : the average (over all states) of uncertainty weighted q values
+    value=np.mean(q_all)
+    return value
+
+
+
+
+def eval_policy_with_uw_critic(policy,dataset,critic,device):
+    logger.log('doing offline evaluation on evaluation dataset using uncertainty weighted critic ...')
+    obs=dataset['observation']
     batch_size = 10000
     q_mean_all=[]
     q_std_all=[]
@@ -500,18 +520,18 @@ def eval_policy_with_uw_critic(policy,dataset,critic,device):
     for l in tqdm(range(0,n_obs,batch_size)):
         obs_tensor = torch.FloatTensor(obs[l:l+batch_size]).to(device)
         policy_act = policy.get_actions(obs_tensor)[0]
-        q_mean,q_std = critic.predict(obs[l:l+batch_size],policy_act)
+        q_mean,q_std = critic.predict(obs[l:l+batch_size],policy_act,n_sim=1)
         q_mean_all.append(q_mean)
         q_std_all.append(q_std)
-    q_mean_all = np.concatenate(q_mean_all,axis=0)
-    q_std_all = np.concatenate(q_std_all, axis=0)
+    q_mean_all = np.array(q_mean_all).flatten()
+    q_std_all = np.array(q_std_all).flatten()
     logger.log(f'average q_mean = {q_mean_all.mean()} , average q_std = {q_std_all.mean()} ')
     # statistic summary : the average (over all states) of uncertainty weighted q values
     value=np.mean(q_mean_all-q_std_all)
     return value
 
 
-def unc_aware_policy_eval(policy,dataset,env_spec,device,critic_dir):
+def load_or_train_critic(policy,dataset,env_spec,device,critic_dir):
     critic_file_name = os.path.join(critic_dir, 'critic.pkl')
     if os.path.exists(critic_file_name):
         logger.log(f'loading critic from {critic_file_name}')
@@ -519,12 +539,12 @@ def unc_aware_policy_eval(policy,dataset,env_spec,device,critic_dir):
             critic = cloudpickle.load(file)
     else:
         logger.log('creating and training a critic')
-        critic = UncWgtCritic(env_spec,device,n_epochs=20,hidden_dims=[1024,1024])
+        critic = UncWgtCritic(env_spec,device,n_epochs=5,hidden_dims=[1024,1024],dropout_prob=0.)
         critic.fit(dataset,policy)
         # save the critic
         with open(critic_file_name, 'wb') as file:
             cloudpickle.dump(critic, file)
-    return eval_policy_with_uw_critic(policy,dataset,critic,device)
+    return critic
 
 
 @wrap_experiment(snapshot_mode='last')
@@ -535,7 +555,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     else:
         set_gpu_mode(False)
     device = global_device()
-    logger.log(f'print from within the function ')
+
     # exp_dir = os.path.join(exp_dir,'uw_mod_sel'+ '-' + time.strftime("%d-%m-%Y_%H-%M-%S"))
 
     # snp_folder = os.path.join(exp_dir, 'sac_half_cheetah_vel')
@@ -568,13 +588,22 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     logger.log(f'selecting transitions {start_trans} to {end_trans} for the evaluation')
     dataset = {k: v[start_trans:end_trans] for k, v in replay_buffer._buffer.items()}
     critic_path = args.trained_critic_path or ctxt.snapshot_dir
-    value = unc_aware_policy_eval(policy,dataset,env.spec,device,critic_path)
+    if args.intc:   # use internal critic
+        logger.log('using internal critic')
+        critic = policy_snp['algo']._target_qf1.to(device)
+        value = eval_policy_with_internal_critic(policy,dataset,critic,device)
+    else: # use uw critic
+        logger.log('using uw critic')
+        critic = load_or_train_critic(policy,dataset,env.spec,device,critic_path)
+        value = eval_policy_with_uw_critic(policy, dataset, critic, device)
+
     logger.log(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
 
     logger.log('evaluating the policy on the target env for 100 episodes')
     discount = policy_snp['algo']._discount
     eval_episodes = obtain_evaluation_episodes(policy, env)
     analyze_eval_episodes(eval_episodes,discount=discount)
+    logger.log('done.')
 
 
 if __name__ == '__main__':
