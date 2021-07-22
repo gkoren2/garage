@@ -320,13 +320,13 @@ class UncWgtCritic:
                  discount=0.99,
                  n_epochs=1000,
                  batch_size=128,
-                 critic_target_update_freq=100,
-                 critic_tau=0.01,
+                 critic_target_update_freq=1,
+                 critic_tau=0.005,
                  lr=0.001,
                  layer_norm = False,
                  dropout_prob=0.2,
                  activation='relu',
-                 log_interval=1000):
+                 log_interval=10):
         self.env_spec = env_spec
         self.lr = lr
         self.dropout_prob= dropout_prob
@@ -386,7 +386,7 @@ class UncWgtCritic:
         if step % self.log_interval == 0:
         #     L.log('train_critic/loss', critic_loss, step)
         #     logger.log(f'step {step}: train_critic/loss {critic_loss}')
-            print(f'step {step}: train_critic/loss {critic_loss}')
+            print(f'step {step}: train_critic/loss {critic_loss}, target_Q={torch.mean(target_Q)}')
 
         #     tabular.record('train_critic/loss',critic_loss)
         #     logger.log(tabular)
@@ -410,12 +410,12 @@ class UncWgtCritic:
         # extract the relevant items from the experience buffer
         obs, action, reward, next_obs, done = tuple([v for k,v in dataset.items()])
         train_set_size = len(obs)
-        n_steps = (self.n_epochs * train_set_size) // self.batch_size
-
+        # n_steps = (self.n_epochs * train_set_size) // self.batch_size
+        n_batches = self.n_epochs
         # move the policy to the device
         policy = policy.to(self.device)
-        print(f'training for {n_steps} steps')
-        for step in range(n_steps):
+        print(f'training for {n_batches} batches * 1 gradient step per batch')
+        for step in range(n_batches):
             # sample from the train set
             idxs = np.random.randint(0,train_set_size,size=self.batch_size)
             obs_tensor = torch.FloatTensor(obs[idxs]).to(self.device)
@@ -438,7 +438,7 @@ class UncWgtCritic:
         self.critic.train()
         obs_tensor = torch.FloatTensor(obs).to(self.device)
         action_tensor = torch.FloatTensor(action).to(self.device)
-        obs_action = torch.cat([obs_tensor, action_tensor], dim=1)
+        obs_action = torch.cat([obs_tensor, action_tensor], dim=-1)
         Q_preds=np.array([self.critic(obs_action).data.cpu().numpy() for _ in range(n_sim)]).squeeze()
         q_mean = np.mean(Q_preds,axis=0)
         q_std = np.std(Q_preds,axis=0)
@@ -447,7 +447,7 @@ class UncWgtCritic:
 ##########################################
 #region tools
 from garage.np import discount_cumsum
-def analyze_eval_episodes(batch, discount):
+def analyze_eval_episodes(batch, discount,critic=None):
     """Evaluate the performance of an algorithm on a batch of episodes.
 
     Args:
@@ -461,6 +461,7 @@ def analyze_eval_episodes(batch, discount):
 
     """
     returns = []
+    q0s=[]
     undiscounted_returns = []
     termination = []
     success = []
@@ -473,13 +474,20 @@ def analyze_eval_episodes(batch, discount):
                     for step_type in eps.step_types)))
         if 'success' in eps.env_infos:
             success.append(float(eps.env_infos['success'].any()))
+        if critic:
+            q0s.append(critic.predict(eps.observations[0],eps.actions[0],n_sim=2))
 
     average_discounted_return = np.mean([rtn[0] for rtn in returns])
+    average_q0 = np.mean(q0s)
 
     logger.log(f'NumEpisodes: {len(returns)}')
     logger.log(f'AverageDiscountedReturn: {average_discounted_return}')
+    if critic:
+        logger.log(f'Average Q(s0,a0): {average_q0}')
     logger.log(f'AverageReturn: {np.mean(undiscounted_returns)}')
-    logger.log(f'StdReturn: {np.std(undiscounted_returns)}' )
+    logger.log(f'StdReturn: {np.std(undiscounted_returns)}')
+
+
     # logger.log('MaxReturn', np.max(undiscounted_returns))
     # logger.log('MinReturn', np.min(undiscounted_returns))
     # logger.log('TerminationRate', np.mean(termination))
@@ -520,7 +528,7 @@ def eval_policy_with_uw_critic(policy,dataset,critic,device):
     for l in tqdm(range(0,n_obs,batch_size)):
         obs_tensor = torch.FloatTensor(obs[l:l+batch_size]).to(device)
         policy_act = policy.get_actions(obs_tensor)[0]
-        q_mean,q_std = critic.predict(obs[l:l+batch_size],policy_act,n_sim=1)
+        q_mean,q_std = critic.predict(obs[l:l+batch_size],policy_act,n_sim=2)
         q_mean_all.append(q_mean)
         q_std_all.append(q_std)
     q_mean_all = np.array(q_mean_all).flatten()
@@ -539,7 +547,11 @@ def load_or_train_critic(policy,dataset,env_spec,device,critic_dir):
             critic = cloudpickle.load(file)
     else:
         logger.log('creating and training a critic')
-        critic = UncWgtCritic(env_spec,device,n_epochs=5,hidden_dims=[1024,1024],dropout_prob=0.)
+        critic = UncWgtCritic(env_spec,device,n_epochs=120000,
+                              hidden_dims=[256,256],
+                              batch_size=1024,
+                              dropout_prob=0.0,
+                              log_interval=1000)
         critic.fit(dataset,policy)
         # save the critic
         with open(critic_file_name, 'wb') as file:
@@ -602,7 +614,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     logger.log('evaluating the policy on the target env for 100 episodes')
     discount = policy_snp['algo']._discount
     eval_episodes = obtain_evaluation_episodes(policy, env)
-    analyze_eval_episodes(eval_episodes,discount=discount)
+    analyze_eval_episodes(eval_episodes,discount=discount,critic=critic)
     logger.log('done.')
 
 
