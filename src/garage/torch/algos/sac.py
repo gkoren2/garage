@@ -384,7 +384,7 @@ class SAC(RLAlgorithm):
                 1. - terminals) * self._discount * target_q_values
         qf1_loss = F.mse_loss(q1_pred.flatten(), q_target)
         qf2_loss = F.mse_loss(q2_pred.flatten(), q_target)
-
+        tabular.record('QF/{}'.format('q_target'), float(torch.mean(q_target)))
         return qf1_loss, qf2_loss
 
     def _update_targets(self):
