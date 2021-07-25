@@ -31,6 +31,7 @@ def parse_cmd_line():
     parser.add_argument('-d','--val_dataset_path', type=str, nargs='+',
                         help='path iteration [start sample] [end sample]',
                         required=True)
+    parser.add_argument('--n_epochs',type=int,help='number of epochs to train the uw critic',default=120000)
     parser.add_argument('--intc',action='store_true',help='use internal critic')
     parser.add_argument('-c', '--trained_critic_path', help='Path to a pretrained critic to continue training',
                         default='', type=str)
@@ -406,7 +407,8 @@ class UncWgtCritic:
                 tau * param.data + (1 - tau) * target_param.data
             )
 
-    def fit(self,dataset,policy):
+    def fit(self,dataset,policy,n_epochs=None):
+        self.n_epochs = n_epochs or self.n_epochs
         # extract the relevant items from the experience buffer
         obs, action, reward, next_obs, done = tuple([v for k,v in dataset.items()])
         train_set_size = len(obs)
@@ -465,6 +467,7 @@ def analyze_eval_episodes(batch, discount,critic=None):
     undiscounted_returns = []
     termination = []
     success = []
+    uw_critic = critic and hasattr(critic,'predict')
     for eps in batch.split():
         returns.append(discount_cumsum(eps.rewards, discount))
         undiscounted_returns.append(sum(eps.rewards))
@@ -474,15 +477,14 @@ def analyze_eval_episodes(batch, discount,critic=None):
                     for step_type in eps.step_types)))
         if 'success' in eps.env_infos:
             success.append(float(eps.env_infos['success'].any()))
-        if critic:
-            q0s.append(critic.predict(eps.observations[0],eps.actions[0],n_sim=2))
-
+        if uw_critic:
+            q0s.append(critic.predict(eps.observations[0],eps.actions[0]))
     average_discounted_return = np.mean([rtn[0] for rtn in returns])
     average_q0 = np.mean(q0s)
 
     logger.log(f'NumEpisodes: {len(returns)}')
     logger.log(f'AverageDiscountedReturn: {average_discounted_return}')
-    if critic:
+    if uw_critic:
         logger.log(f'Average Q(s0,a0): {average_q0}')
     logger.log(f'AverageReturn: {np.mean(undiscounted_returns)}')
     logger.log(f'StdReturn: {np.std(undiscounted_returns)}')
@@ -528,7 +530,7 @@ def eval_policy_with_uw_critic(policy,dataset,critic,device):
     for l in tqdm(range(0,n_obs,batch_size)):
         obs_tensor = torch.FloatTensor(obs[l:l+batch_size]).to(device)
         policy_act = policy.get_actions(obs_tensor)[0]
-        q_mean,q_std = critic.predict(obs[l:l+batch_size],policy_act,n_sim=2)
+        q_mean,q_std = critic.predict(obs[l:l+batch_size],policy_act)
         q_mean_all.append(q_mean)
         q_std_all.append(q_std)
     q_mean_all = np.array(q_mean_all).flatten()
@@ -539,7 +541,7 @@ def eval_policy_with_uw_critic(policy,dataset,critic,device):
     return value
 
 
-def load_or_train_critic(policy,dataset,env_spec,device,critic_dir):
+def load_or_train_critic(policy,dataset,env_spec,device,critic_dir,n_epochs=120000):
     critic_file_name = os.path.join(critic_dir, 'critic.pkl')
     if os.path.exists(critic_file_name):
         logger.log(f'loading critic from {critic_file_name}')
@@ -547,12 +549,12 @@ def load_or_train_critic(policy,dataset,env_spec,device,critic_dir):
             critic = cloudpickle.load(file)
     else:
         logger.log('creating and training a critic')
-        critic = UncWgtCritic(env_spec,device,n_epochs=120000,
+        critic = UncWgtCritic(env_spec,device,
                               hidden_dims=[256,256],
                               batch_size=1024,
-                              dropout_prob=0.0,
+                              dropout_prob=0.2,
                               log_interval=1000)
-        critic.fit(dataset,policy)
+        critic.fit(dataset,policy,n_epochs=n_epochs)
         # save the critic
         with open(critic_file_name, 'wb') as file:
             cloudpickle.dump(critic, file)
@@ -585,7 +587,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     dataset_itr = int(args.val_dataset_path[1])    # s for source, t for target
     logger.log(f'Evaluating policy from {policy_snp_folder} itr_{policy_itr} on dataset {dataset_snp_folder} itr_{dataset_itr}')
     policy_snp = snapshotter.load(os.path.expanduser(policy_snp_folder), itr=policy_itr)
-    policy = policy_snp['algo'].policy
+    policy = policy_snp['algo'].policy.to(device)
     data_snapshot = snapshotter.load(os.path.expanduser(dataset_snp_folder), itr=dataset_itr)
     env = data_snapshot['env']
     replay_buffer = data_snapshot['algo'].replay_buffer
@@ -606,7 +608,8 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
         value = eval_policy_with_internal_critic(policy,dataset,critic,device)
     else: # use uw critic
         logger.log('using uw critic')
-        critic = load_or_train_critic(policy,dataset,env.spec,device,critic_path)
+        critic = load_or_train_critic(policy,dataset,env.spec,device,
+                                      critic_path,args.n_epochs)
         value = eval_policy_with_uw_critic(policy, dataset, critic, device)
 
     logger.log(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
