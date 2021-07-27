@@ -1,0 +1,65 @@
+This file maps from teh training and algorithm paramters in rlkit to those in garage.
+
+Here's an example to how it is configured in rlkit. in each line we'll map to garage
+{
+  "algorithm": "SAC",
+  "algorithm_kwargs": {
+    "batch_size": 128,              --> SAC.buffer_batch_size
+    "eval_max_path_length": 500,    --> SAC: max_episode_length_eval
+    "expl_max_path_length": 500,    --> SAC: taken from env.spec
+    "min_num_steps_before_training": 3300,  --> SAC: min_buffer_size
+    "num_epochs": 2000,             --> trainer.train argument
+    "num_eval_steps_per_epoch": 2500,   --> SAC: num_evaluation_episodes (need to take into account episode length)
+    "num_expl_steps_per_train_loop": 2500, --> should be the number of steps we add to the buffer.
+                                               i.e. trainer.train argument
+    "num_trains_per_train_loop": 1000  --> SAC: gradient_steps_per_itr ?
+  },
+  "eval_environment_kwargs": {
+    "control_freq": 20,
+    "controller": "JOINT_VELOCITY",
+    "env_name": "Lift",
+    "hard_reset": false,
+    "horizon": 500,
+    "ignore_done": true,
+    "reward_scale": 1.0,
+    "robots": [
+      "Panda"
+    ]
+  },
+  "expl_environment_kwargs": {
+    "control_freq": 20,
+    "controller": "JOINT_VELOCITY",
+    "env_name": "Lift",
+    "hard_reset": false,
+    "horizon": 500,
+    "ignore_done": true,
+    "reward_scale": 1.0,
+    "robots": [
+      "Panda"
+    ]
+  },
+  "policy_kwargs": {
+    "hidden_sizes": [
+      256,
+      256
+    ]
+  },
+  "qf_kwargs": {
+    "hidden_sizes": [
+      256,
+      256
+    ]
+  },
+  "replay_buffer_size": 1000000,
+  "seed": 17,
+  "trainer_kwargs": {
+    "discount": 0.99,       --> SAC.discount
+    "policy_lr": 0.001,     --> SAC.policy_lr
+    "qf_lr": 0.0005,        --> SAC.qf_lr
+    "reward_scale": 1.0,    --> SAC.reward_scale
+    "soft_target_tau": 0.005,   -->
+    "target_update_period": 5,
+    "use_automatic_entropy_tuning": true
+  },
+  "version": "normal"
+}
