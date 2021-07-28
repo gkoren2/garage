@@ -12,7 +12,33 @@ Here's an example to how it is configured in rlkit. in each line we'll map to ga
     "num_eval_steps_per_epoch": 2500,   --> SAC: num_evaluation_episodes (need to take into account episode length)
     "num_expl_steps_per_train_loop": 2500, --> should be the number of steps we add to the buffer.
                                                i.e. trainer.train argument
-    "num_trains_per_train_loop": 1000  --> SAC: gradient_steps_per_itr ?
+    "num_trains_per_train_loop": 1000  --> SAC: gradient_steps_per_itr
+
+    in rlkit: we have
+        num_epochs epochs
+        num_train_loops_per_epoch iterations in each epoch
+        num_trains_per_train_loop steps for each training loop
+        num_expl_steps_per_train_loop steps where in each step we take 1 step in the enviornment followed by
+        num_trains_per_expl_step (=num_trains_per_train_loop//num_expl_steps_per_train_loop) calls to 'train' on a batch
+
+    in garage: we have
+        trainer.num_epochs epochs
+            sac._steps_per_epochs steps in each epoch where in each step:
+                we collect trainer.batch_size samples to the buffer
+                we do sac.gradient_steps calls to 'train' on a batch
+            evaluate policy
+
+    given that, its not clear how num_trains_per_train_loop (=1000) < num_expl_steps_per_train_loop (=2500)
+    from the CLI I conclude to do the following:
+     - take expl_ep_per_train_loop episodes in each step and collect to buffer (the number of steps is multiplied by episode length from the environment)
+     - do gradient_steps calls
+
+
+
+
+
+    "num_train_loops_per_epoch": 1 (default) --> SAC: steps_per_epoch
+
   },
   "eval_environment_kwargs": {
     "control_freq": 20,
