@@ -8,12 +8,8 @@ if proj_root_dir not in sys.path:
     sys.path.insert(0,proj_root_dir)
 ######################
 import argparse
-import time
 import json
-import numpy as np
 import torch
-import torch.nn as nn
-import copy
 import garage
 from dowel import logger,tabular
 from garage.envs import GymEnv, normalize
@@ -26,13 +22,9 @@ from garage.sampler import FragmentWorker, LocalSampler
 from garage.torch.algos import SAC
 from garage.torch.policies import TanhGaussianMLPPolicy
 from garage.torch.q_functions import ContinuousMLPQFunction
-from torch.nn import functional as F
-import cloudpickle
-from garage import rollout
-from tqdm import tqdm
-
+from _labexp.my_envs.robosuite_env import GrgGymWrapper
 import robosuite as suite
-from robosuite.wrappers import GymWrapper
+
 
 from robosuite.controllers import load_controller_config, ALL_CONTROLLERS
 
@@ -114,7 +106,7 @@ def add_robosuite_args():
     )
 
 
-def get_expl_env_kwargs():
+def get_train_env_kwargs():
     """
     Grabs the robosuite-specific arguments and converts them into an
     rlkit-compatible dict for exploration env
@@ -333,7 +325,7 @@ def create_variant():
             batch_size=args.expl_horizon * args.expl_ep_per_train_loop,
             store_episodes=args.store_episodes
         ),
-        expl_environment_kwargs=get_expl_env_kwargs(),
+        train_environment_kwargs=get_train_env_kwargs(),
         eval_environment_kwargs=get_eval_env_kwargs(),
     )
 
@@ -361,7 +353,7 @@ def robosuite_benchmark(ctxt=None,variant=None):
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # create the robosuite env
     suites=[]
-    for env_config in (variant['train_env_kwargs'],variant['eval_env_kwargs']):
+    for env_config in (variant['train_environment_kwargs'],variant['eval_environment_kwargs']):
         # load controller
         controller = env_config.pop('controller')
         if controller in set(ALL_CONTROLLERS):
@@ -369,6 +361,16 @@ def robosuite_benchmark(ctxt=None,variant=None):
             controller_config = load_controller_config(default_controller=controller)
         else:   # a string to a custom controller
             controller_config = load_controller_config(custom_fpath=controller)
+        # suites.append(RobosuiteEnvGrg(**env_config,
+        #                               has_renderer=False,
+        #                               has_offscreen_renderer=False,
+        #                               use_object_obs=True,
+        #                               use_camera_obs=False,
+        #                               reward_shaping=True,
+        #                               controller_configs=controller_config,
+        #                               ))
+
+
         suites.append(suite.make(**env_config,
                                  has_renderer=False,
                                  has_offscreen_renderer=False,
@@ -377,9 +379,14 @@ def robosuite_benchmark(ctxt=None,variant=None):
                                  reward_shaping=True,
                                  controller_configs=controller_config,
                                  ))
+
         # currently assume same env for train and eval
-    env = train_env = normalize(GymEnv(GymWrapper(suites[0])))
-    # eval_env = normalize(GymEnv(GymWrapper(suites[1])))
+    env = GrgGymWrapper(suites[0])
+    env = GymEnv(env,max_episode_length=suites[0].horizon)
+    env = normalize(env)
+    # env = train_env = normalize(GymEnv(GrgGymWrapper(suites[0])))
+    eval_env = normalize(GymEnv(GrgGymWrapper(suites[1]),
+                                max_episode_length=suites[1].horizon))
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # create the agent
@@ -391,7 +398,7 @@ def robosuite_benchmark(ctxt=None,variant=None):
 
     qf1 = ContinuousMLPQFunction(env_spec=env.spec,**variant['qf_kwargs'])
 
-    qf2 = ContinuousMLPQFunction(env_spec=env.spec, **variant['policy_kwargs'])
+    qf2 = ContinuousMLPQFunction(env_spec=env.spec, **variant['qf_kwargs'])
 
     replay_buffer = PathBuffer(capacity_in_transitions=variant['replay_buffer_size'])
 
@@ -406,7 +413,7 @@ def robosuite_benchmark(ctxt=None,variant=None):
               qf2=qf2,
               sampler=sampler,
               replay_buffer=replay_buffer,
-              # eval_env=eval_env,
+              eval_env=eval_env,
               **variant['algo_kwargs'])
     sac.to()
 
@@ -417,6 +424,8 @@ def robosuite_benchmark(ctxt=None,variant=None):
     trainer.setup(algo=sac, env=env)
     trainer.train(**variant['train_kwargs'])
 
+    logger.log('Done.')
+
 
 
 
@@ -425,12 +434,12 @@ def robosuite_benchmark(ctxt=None,variant=None):
 if __name__ == '__main__':
     args=parse_cmd_line()
 
-    if args.fvariant:
+    if args.variant:
         try:
-            with open(args.fvariant)as f:
+            with open(args.variant)as f:
                 variant=json.load(f)
         except FileNotFoundError:
-            print(f'Error opening variant at {args.fvariant}')
+            print(f'Error opening variant at {args.variant}')
     else:
         variant = create_variant()
 
@@ -455,6 +464,6 @@ if __name__ == '__main__':
     # x_axis = self.x_axis,
     # signature = self.__signature__
     options = {'name':experiment_name}
-    robosuite_benchmark(options,variant)
+    robosuite_benchmark(options,variant=variant)
 
     sys.path.remove(proj_root_dir)

@@ -8,8 +8,9 @@ from robosuite.wrappers.domain_randomization_wrapper import DEFAULT_COLOR_ARGS, 
     DEFAULT_LIGHTING_ARGS, DEFAULT_DYNAMICS_ARGS
 import numpy as np
 from copy import deepcopy
-from garage.envs import GymEnv
+from robosuite.wrappers import GymWrapper
 
+#region from radsac
 ROBOSUITE_ENVIRONMENTS = list(robosuite.ALL_ENVIRONMENTS)
 ROBOSUITE_ROBOTS = list(robosuite.ALL_ROBOTS)
 ROBOSUITE_CONTROLLERS = list(robosuite.ALL_CONTROLLERS)
@@ -253,15 +254,16 @@ def create_environment(env_name, controller_name, pre_transform_image_size,
         env.seed(seed)
 
     return env
-
+#endregion
 
 # the following class is a wrappper for using robosuite in garage
 # todo: do we need a wrapper for gym.Env ? for example : pickling
 #  check how other envs are wrapped in garage
 
-class RobosuiteEnvGrg(GymEnv):
+class RobosuiteEnvGrg(gym.Env):
     metadata = {'render.modes': ['human', 'rgb_array']}
-
+    # def __init__(self,env_name,robots,horizon,control_freq,reward_scale,
+    #              hard_reset,ignore_done, ):
     def __init__(self, level, base_robosuite_config, robot, controller, extra_robosuite_config=None,
                  apply_dr=False, dr_wrapper_config=None, frame_skip=1,
                  obs_names_to_disable=('joint_vel', 'gripper_qvel')):
@@ -395,3 +397,9 @@ class RobosuiteEnvGrg(GymEnv):
             return np.flip(img, 0)
         else:
             super().render(mode=mode)
+
+
+class GrgGymWrapper(GymWrapper):
+    def __init__(self,env):
+        super().__init__(env=env)
+        self.metadata={'render.modes': ['human', 'rgb_array']}
