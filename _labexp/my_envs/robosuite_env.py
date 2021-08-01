@@ -311,22 +311,30 @@ class RobosuiteEnvGrg(gym.Env, EzPickle):
             self.env.modify_observable(obs, 'active', False)
             self.env.modify_observable(obs, 'enabled', False)
 
-        self.env = Wrapper(self.env)
+        # self.env = Wrapper(self.env)
+        self.env = GymWrapper(self.env)
 
-        if self.apply_dr:
-            dr_wrapper_config = dr_wrapper_config or DR_WRAPPER_DEFAULT_CONFIG
-            self.env = DomainRandomizationWrapper(self.env, **dr_wrapper_config)
+        # if self.apply_dr:
+        #     dr_wrapper_config = dr_wrapper_config or DR_WRAPPER_DEFAULT_CONFIG
+        #     self.env = DomainRandomizationWrapper(self.env, **dr_wrapper_config)
+
+        self.observation_space = self.env.observation_space
+        self.action_space = self.env.action_space
+
 
         # Observation space
-        dummy_obs = self._process_observation(self.env.observation_spec())
-        obs_space_dict = {'measurements': Box(low=-np.inf, high=np.inf, shape=dummy_obs['measurements'].shape)}
-        if self.config['use_camera_obs']:
-            obs_space_dict['camera'] = Box(low=0, high=255, shape=dummy_obs['camera'].shape, dtype=np.uint8)
-        self.observation_space = Dict(obs_space_dict)
+        # dummy_obs = self._process_observation(self.env.observation_spec())
+        # obs_space_dict = {'measurements': Box(low=-np.inf, high=np.inf, shape=dummy_obs['measurements'].shape)}
+        # if self.config['use_camera_obs']:
+        #     obs_space_dict['camera'] = Box(low=0, high=255, shape=dummy_obs['camera'].shape, dtype=np.uint8)
+        # # currently ignoring the camera measurement. assuming always False
+        # # self.observation_space = Dict(obs_space_dict)
+        # self.observation_space = obs_space_dict['measurements']
+        #
+        # # Action space
+        # low, high = self.env.unwrapped.action_spec
+        # self.action_space = Box(low=low, high=high)
 
-        # Action space
-        low, high = self.env.unwrapped.action_spec
-        self.action_space = Box(low=low, high=high)
 
     def seed(self, seed=None):
         self.np_random_state, seed = seeding.np_random(seed)
@@ -353,7 +361,7 @@ class RobosuiteEnvGrg(gym.Env, EzPickle):
             measurements = np.concatenate([measurements, object_obs])
         new_obs['measurements'] = measurements
 
-        return new_obs
+        return new_obs['measurements']
 
     def step(self, action):
         action = np.clip(action, self.action_space.low, self.action_space.high)
@@ -369,12 +377,12 @@ class RobosuiteEnvGrg(gym.Env, EzPickle):
                 break
 
         reward = np.mean(rewards)
-        obs = self._process_observation(obs)
+        # obs = self._process_observation(obs)
         return obs, reward, done, info
 
     def reset(self):
         obs = self.env.reset()
-        obs = self._process_observation(obs)
+        # obs = self._process_observation(obs)
         return obs
 
     def render(self, mode='human'):
