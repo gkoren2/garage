@@ -1,6 +1,7 @@
 # Note : this file was created with the help of the robosuite-benchmark
 # train.py and arguments.py script
 # and by comparing garage.SAC to rlkit.SAC
+import copy
 import os
 import sys
 proj_root_dir = os.path.dirname(os.path.realpath('.'))   # project root dir
@@ -22,8 +23,7 @@ from garage.sampler import FragmentWorker, LocalSampler
 from garage.torch.algos import SAC
 from garage.torch.policies import TanhGaussianMLPPolicy
 from garage.torch.q_functions import ContinuousMLPQFunction
-from _labexp.my_envs.robosuite_env import GrgGymWrapper
-import robosuite as suite
+from _labexp.my_envs.robosuite_env import GrgGymWrapper,RobosuiteEnvGrg
 
 
 from robosuite.controllers import load_controller_config, ALL_CONTROLLERS
@@ -355,38 +355,21 @@ def robosuite_benchmark(ctxt=None,variant=None):
     suites=[]
     for env_config in (variant['train_environment_kwargs'],variant['eval_environment_kwargs']):
         # load controller
-        controller = env_config.pop('controller')
-        if controller in set(ALL_CONTROLLERS):
-            # A default controller
-            controller_config = load_controller_config(default_controller=controller)
-        else:   # a string to a custom controller
-            controller_config = load_controller_config(custom_fpath=controller)
-        # suites.append(RobosuiteEnvGrg(**env_config,
-        #                               has_renderer=False,
-        #                               has_offscreen_renderer=False,
-        #                               use_object_obs=True,
-        #                               use_camera_obs=False,
-        #                               reward_shaping=True,
-        #                               controller_configs=controller_config,
-        #                               ))
-
-
-        suites.append(suite.make(**env_config,
-                                 has_renderer=False,
-                                 has_offscreen_renderer=False,
-                                 use_object_obs=True,
-                                 use_camera_obs=False,
-                                 reward_shaping=True,
-                                 controller_configs=controller_config,
-                                 ))
+        suites.append(RobosuiteEnvGrg(**env_config,
+                                      has_renderer=False,
+                                      has_offscreen_renderer=False,
+                                      use_object_obs=True,
+                                      use_camera_obs=False,
+                                      reward_shaping=True,
+                                      ))
 
         # currently assume same env for train and eval
-    env = GrgGymWrapper(suites[0])
-    env = GymEnv(env,max_episode_length=suites[0].horizon)
+    env = GymEnv(suites[0],max_episode_length=suites[0].horizon)
     env = normalize(env)
     # env = train_env = normalize(GymEnv(GrgGymWrapper(suites[0])))
-    eval_env = normalize(GymEnv(GrgGymWrapper(suites[1]),
-                                max_episode_length=suites[1].horizon))
+    eval_env = GymEnv(suites[1],
+                      max_episode_length=suites[1].horizon)
+    eval_env = normalize(eval_env)
 
     #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     # create the agent
@@ -405,6 +388,7 @@ def robosuite_benchmark(ctxt=None,variant=None):
     sampler = LocalSampler(agents=policy,
                            envs=env,
                            max_episode_length=env.spec.max_episode_length,
+                           n_workers=1,
                            worker_class=FragmentWorker)
     # currently supporing only SAC.
     sac = SAC(env_spec=env.spec,

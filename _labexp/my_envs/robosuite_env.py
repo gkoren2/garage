@@ -1,19 +1,19 @@
 import gym
 from gym.spaces import Dict, Box
-from gym.utils import seeding
+from gym.utils import seeding,EzPickle
 
 import robosuite
-from robosuite.wrappers import Wrapper, DomainRandomizationWrapper
+from robosuite.wrappers import Wrapper, DomainRandomizationWrapper,GymWrapper
 from robosuite.wrappers.domain_randomization_wrapper import DEFAULT_COLOR_ARGS, DEFAULT_CAMERA_ARGS, \
     DEFAULT_LIGHTING_ARGS, DEFAULT_DYNAMICS_ARGS
 import numpy as np
 from copy import deepcopy
-from robosuite.wrappers import GymWrapper
+from robosuite.controllers import load_controller_config, ALL_CONTROLLERS
 
 #region from radsac
 ROBOSUITE_ENVIRONMENTS = list(robosuite.ALL_ENVIRONMENTS)
 ROBOSUITE_ROBOTS = list(robosuite.ALL_ROBOTS)
-ROBOSUITE_CONTROLLERS = list(robosuite.ALL_CONTROLLERS)
+ROBOSUITE_CONTROLLERS = list(ALL_CONTROLLERS)
 
 ROBOSUITE_DEFAULT_BASE_CONFIG = {
     'horizon': 1000,         # Every episode lasts for exactly horizon timesteps
@@ -260,50 +260,38 @@ def create_environment(env_name, controller_name, pre_transform_image_size,
 # todo: do we need a wrapper for gym.Env ? for example : pickling
 #  check how other envs are wrapped in garage
 
-class RobosuiteEnvGrg(gym.Env):
+class RobosuiteEnvGrg(gym.Env, EzPickle):
     metadata = {'render.modes': ['human', 'rgb_array']}
     # def __init__(self,env_name,robots,horizon,control_freq,reward_scale,
     #              hard_reset,ignore_done, ):
-    def __init__(self, level, base_robosuite_config, robot, controller, extra_robosuite_config=None,
-                 apply_dr=False, dr_wrapper_config=None, frame_skip=1,
-                 obs_names_to_disable=('joint_vel', 'gripper_qvel')):
-        # Validate arguments
-        self.frame_skip = max(1, frame_skip)
+    def __init__(self, **env_config):
+        EzPickle.__init__(self,**env_config)
 
-        def validate_input(input, supported, name):
-            if input not in supported:
-                raise ValueError("Unknown Robosuite {0} passed: '{1}' ; Supported {0}s are: {2}".format(
-                    name, input, ' | '.join(supported)
-                ))
-            return input
+        self.frame_skip = max(1, env_config.get('frame_skip',1))
+        self.obs_names_to_disable = []
+        self.apply_dr = False
+        dr_wrapper_config=None
 
-        self.env_id = validate_input(level, ROBOSUITE_ENVIRONMENTS, 'environment')
-        self.robot = validate_input(robot, ROBOSUITE_ROBOTS, 'robot')
-        if controller is not None:
-            validate_input(controller, ROBOSUITE_CONTROLLERS, 'controller')
-        self.controller = controller
+        self.config = deepcopy(env_config)
 
-        self.apply_dr = apply_dr
-        self.obs_names_to_disable = obs_names_to_disable
-        self._max_episode_steps = base_robosuite_config['horizon']
+        self.env_id = self.config['env_name']
 
-        self.config = deepcopy(base_robosuite_config)
+        self.horizon = self.config['horizon']
+
         self.config['has_offscreen_renderer'] = self.config['has_offscreen_renderer'] or self.config['use_camera_obs']
-
-        # Load and initialize environment
-        extra_robosuite_config = extra_robosuite_config or {}
-        self.config.update(extra_robosuite_config)
 
         if 'reward_scale' not in self.config and self.env_id in DEFAULT_REWARD_SCALES:
             self.config['reward_scale'] = DEFAULT_REWARD_SCALES[self.env_id]
 
-        self.config['robots'] = self.robot
-        controller_cfg = None
-        if self.controller is not None:
-            controller_cfg = robosuite.controllers.load_controller_config(default_controller=self.controller)
-        self.config['controller_configs'] = controller_cfg
+        controller = self.config.pop('controller')
+        if controller in set(ALL_CONTROLLERS):
+            # A default controller
+            controller_config = load_controller_config(default_controller=controller)
+        else:   # a string to a custom controller
+            controller_config = load_controller_config(custom_fpath=controller)
+        self.config['controller_configs'] = controller_config
 
-        self.env = robosuite.make(self.env_id, **self.config)
+        self.env = robosuite.make(**self.config)
 
         # Disable requested observations.
         # Requirements on the requested names are "relaxed" - the requested name doesn't have to fully match
@@ -324,7 +312,7 @@ class RobosuiteEnvGrg(gym.Env):
 
         self.env = Wrapper(self.env)
 
-        if apply_dr:
+        if self.apply_dr:
             dr_wrapper_config = dr_wrapper_config or DR_WRAPPER_DEFAULT_CONFIG
             self.env = DomainRandomizationWrapper(self.env, **dr_wrapper_config)
 
@@ -349,7 +337,7 @@ class RobosuiteEnvGrg(gym.Env):
         new_obs = {}
 
         # TODO: Support multiple cameras, this assumes a single camera
-        camera_name = self.config['camera_names']
+        camera_name = self.config.get('camera_names',None) or ''
         camera_obs = raw_obs.get(camera_name + '_image', None)
         if camera_obs is not None:
             depth_obs = raw_obs.get(camera_name + '_depth', None)
