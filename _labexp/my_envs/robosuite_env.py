@@ -152,6 +152,7 @@ class RobosuiteEnv(gym.Env):
         low, high = self.env.unwrapped.action_spec
         self.action_space = Box(low=low, high=high)
 
+
     def seed(self, seed=None):
         self.np_random_state, seed = seeding.np_random(seed)
         if self.apply_dr:
