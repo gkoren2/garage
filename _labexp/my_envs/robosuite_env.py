@@ -257,10 +257,6 @@ def create_environment(env_name, controller_name, pre_transform_image_size,
     return env
 #endregion
 
-# the following class is a wrappper for using robosuite in garage
-# todo: do we need a wrapper for gym.Env ? for example : pickling
-#  check how other envs are wrapped in garage
-
 class RobosuiteEnvGrg(gym.Env, EzPickle):
     metadata = {'render.modes': ['human', 'rgb_array']}
     # def __init__(self,env_name,robots,horizon,control_freq,reward_scale,
@@ -291,6 +287,7 @@ class RobosuiteEnvGrg(gym.Env, EzPickle):
         else:   # a string to a custom controller
             controller_config = load_controller_config(custom_fpath=controller)
         self.config['controller_configs'] = controller_config
+        self.keys = self.config.pop('keys',None)
 
         self.env = robosuite.make(**self.config)
 
@@ -312,7 +309,7 @@ class RobosuiteEnvGrg(gym.Env, EzPickle):
             self.env.modify_observable(obs, 'enabled', False)
 
         # self.env = Wrapper(self.env)
-        self.env = GymWrapper(self.env)
+        self.env = GymWrapper(self.env,self.keys)
 
         # if self.apply_dr:
         #     dr_wrapper_config = dr_wrapper_config or DR_WRAPPER_DEFAULT_CONFIG
@@ -394,6 +391,10 @@ class RobosuiteEnvGrg(gym.Env, EzPickle):
             return np.flip(img, 0)
         else:
             super().render(mode=mode)
+
+    def _get_observations(self):
+        return self.env.unwrapped._get_observations()
+
 
 
 class GrgGymWrapper(GymWrapper):

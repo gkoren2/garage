@@ -388,7 +388,7 @@ def robosuite_benchmark(ctxt=None,variant=None):
     sampler = LocalSampler(agents=policy,
                            envs=env,
                            max_episode_length=env.spec.max_episode_length,
-                           n_workers=1,
+                           n_workers=8,
                            worker_class=FragmentWorker)
     # currently supporing only SAC.
     sac = SAC(env_spec=env.spec,
@@ -420,7 +420,7 @@ if __name__ == '__main__':
 
     if args.variant:
         try:
-            with open(args.variant)as f:
+            with open(args.variant) as f:
                 variant=json.load(f)
         except FileNotFoundError:
             print(f'Error opening variant at {args.variant}')
