@@ -426,7 +426,7 @@ if __name__ == '__main__':
             print(f'Error opening variant at {args.variant}')
     else:
         variant = create_variant()
-
+    variant = variant.get('variant',variant)
     # set log dir
     env_name = variant['train_environment_kwargs']['env_name']
     robots = variant['train_environment_kwargs']['robots']
