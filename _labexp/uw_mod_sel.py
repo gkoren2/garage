@@ -612,7 +612,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
                                       critic_path,args.n_epochs)
         value = eval_policy_with_uw_critic(policy, dataset, critic, device)
 
-    logger.log(f'the value of policy {policy_itr} on dataset {dataset_itr} is {value}')
+    logger.log(f'the value of policy {os.path.basename(policy_snp_folder)}_itr{policy_itr} on dataset {os.path.basename(dataset_snp_folder)}_itr{dataset_itr} is {value}')
 
     logger.log('evaluating the policy on the target env for 100 episodes')
     discount = policy_snp['algo']._discount
