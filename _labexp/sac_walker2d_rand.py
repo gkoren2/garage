@@ -166,7 +166,7 @@ if __name__ == '__main__':
         print(f'tasks saved to {TASKS_FILE_NAME}')
     # set log dir
     seed = args.seed
-    if args.tid and args.tid>=0 and args.tid<len(tasks):
+    if (args.tid is not None) and args.tid>=0 and args.tid<len(tasks):
         print(f'running on task {args.tid}')
         task_id=args.tid
     else:
