@@ -583,9 +583,12 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     # policies = {k: snapshotter.load(snp_folder, itr=itr)['algo'].policy for
     #             k, itr in policies_itr.items()}
 
-    policy_itr = int(args.policies[1])
-    dataset_itr = int(args.val_dataset_path[1])    # s for source, t for target
-    logger.log(f'Evaluating policy from {policy_snp_folder} itr_{policy_itr} on dataset {dataset_snp_folder} itr_{dataset_itr}')
+    policy_itr = 'last' if len(args.policies) == 1 else int(args.policies[1])
+    dataset_itr = 'last' if len(args.val_dataset_path) == 1 else \
+        int(args.val_dataset_path[1])
+
+    logger.log(f'Evaluating policy from {policy_snp_folder} itr_{policy_itr} '
+               f'on dataset {dataset_snp_folder} itr_{dataset_itr}')
     policy_snp = snapshotter.load(os.path.expanduser(policy_snp_folder), itr=policy_itr)
     policy = policy_snp['algo'].policy.to(device)
     data_snapshot = snapshotter.load(os.path.expanduser(dataset_snp_folder), itr=dataset_itr)
