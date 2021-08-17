@@ -580,9 +580,9 @@ def load_or_train_critic(policy,env,device,critic_dir,n_epochs=120000):
                                                      deterministic=False)
         dataset = dict(observation=rollout_buf.observations,
                            action=rollout_buf.actions,
-                           reward=rollout_buf.rewards,
+                           reward=rollout_buf.rewards[:,None],
                            next_observation=rollout_buf.next_observations,
-                           terminal=rollout_buf.terminals)
+                           terminal=rollout_buf.terminals[:,None])
 
         critic.fit(dataset,policy,n_epochs=n_epochs)
         # save the critic
@@ -643,6 +643,9 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
         logger.log('using uw critic')
         critic = load_or_train_critic(policy,src_env,device,
                                       critic_path,args.n_epochs)
+        # critic = load_or_train_critic_old(policy,dataset,env.spec,device,
+        #                               critic_path,args.n_epochs)
+
         value = eval_policy_with_uw_critic(policy, dataset, critic, device)
 
     logger.log(f'the value of policy {os.path.basename(policy_snp_folder)}_itr{policy_itr} on dataset {os.path.basename(dataset_snp_folder)}_itr{dataset_itr} is {value}')
