@@ -165,6 +165,9 @@ def walker2d_mod_val(ctxt=None,args=None):
 
     val_results = [res[1] for p,res in results_dict.items()]
     tst_results = [res[3] for p,res in results_dict.items()]
+    logger.log(f'validation task IDs: {val_envs}')
+    logger.log(f'validation results: {val_results}')
+    logger.log(f'test results: {tst_results}')
     spearman_coef = stats.spearmanr(val_results,tst_results)
     logger.log(f'Spearman correlation: {spearman_coef}')
     logger.log('done.')

@@ -541,7 +541,7 @@ def eval_policy_with_uw_critic(policy,dataset,critic,device):
     return value
 
 
-def load_or_train_critic(policy,dataset,env_spec,device,critic_dir,n_epochs=120000):
+def load_or_train_critic_old(policy,dataset,env_spec,device,critic_dir,n_epochs=120000):
     critic_file_name = os.path.join(critic_dir, 'critic.pkl')
     if os.path.exists(critic_file_name):
         logger.log(f'loading critic from {critic_file_name}')
@@ -560,6 +560,35 @@ def load_or_train_critic(policy,dataset,env_spec,device,critic_dir,n_epochs=1200
             cloudpickle.dump(critic, file)
     return critic
 
+def load_or_train_critic(policy,env,device,critic_dir,n_epochs=120000):
+    critic_file_name = os.path.join(critic_dir, 'critic.pkl')
+    if os.path.exists(critic_file_name):
+        logger.log(f'loading critic from {critic_file_name}')
+        with open(critic_file_name, 'rb') as file:
+            critic = cloudpickle.load(file)
+    else:
+        logger.log('creating and training a critic')
+        critic = UncWgtCritic(env.spec,device,
+                              hidden_dims=[256,256],
+                              batch_size=1024,
+                              dropout_prob=0.2,
+                              log_interval=1000)
+        logger.log('collecting data from env to retrain critic with dropout')
+        rollout_buf = obtain_evaluation_episodes(policy, env,
+                                                     num_eps=200,
+                                                     max_episode_length=env.spec.max_episode_length,
+                                                     deterministic=False)
+        dataset = dict(observation=rollout_buf.observations,
+                           action=rollout_buf.actions,
+                           reward=rollout_buf.rewards,
+                           next_observation=rollout_buf.next_observations,
+                           terminal=rollout_buf.terminals)
+
+        critic.fit(dataset,policy,n_epochs=n_epochs)
+        # save the critic
+        with open(critic_file_name, 'wb') as file:
+            cloudpickle.dump(critic, file)
+    return critic
 
 @wrap_experiment(snapshot_mode='last')
 def unc_wgt_policy_sel(ctxt=None,args=None):
@@ -591,6 +620,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
                f'on dataset {dataset_snp_folder} itr_{dataset_itr}')
     policy_snp = snapshotter.load(os.path.expanduser(policy_snp_folder), itr=policy_itr)
     policy = policy_snp['algo'].policy.to(device)
+    src_env = policy_snp['env']
     data_snapshot = snapshotter.load(os.path.expanduser(dataset_snp_folder), itr=dataset_itr)
     env = data_snapshot['env']
     replay_buffer = data_snapshot['algo'].replay_buffer
@@ -611,7 +641,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
         value = eval_policy_with_internal_critic(policy,dataset,critic,device)
     else: # use uw critic
         logger.log('using uw critic')
-        critic = load_or_train_critic(policy,dataset,env.spec,device,
+        critic = load_or_train_critic(policy,src_env,device,
                                       critic_path,args.n_epochs)
         value = eval_policy_with_uw_critic(policy, dataset, critic, device)
 
