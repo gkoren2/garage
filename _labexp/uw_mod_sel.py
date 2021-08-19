@@ -31,7 +31,10 @@ def parse_cmd_line():
     parser.add_argument('-d','--val_dataset_path', type=str, nargs='+',
                         help='path iteration [start sample] [end sample]',
                         required=True)
-    parser.add_argument('--n_epochs',type=int,help='number of epochs to train the uw critic',default=120000)
+    parser.add_argument('-ds','--data_seg', type=str, nargs='+',
+                        help='select data segment [start sample] [end sample]')
+
+    parser.add_argument('--n_epochs',type=int,help='number of epochs to train the uw critic',default=800000)
     parser.add_argument('--intc',action='store_true',help='use internal critic')
     parser.add_argument('-c', '--trained_critic_path', help='Path to a pretrained critic to continue training',
                         default='', type=str)
@@ -627,11 +630,11 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     # need to leave only the valid samples in the dataset
     n_trans_stored = replay_buffer.n_transitions_stored
     start_trans=0
-    if len(args.val_dataset_path) > 2:   # we're given a segment from the buffer
-        start_trans = int(args.val_dataset_path[2])
+    if len(args.data_seg) > 0:   # we're given a segment from the buffer
+        start_trans = int(args.data_seg[0])
     end_trans = n_trans_stored
-    if len(args.val_dataset_path) > 3:   # we're given a segment from the buffer
-        end_trans = int(args.val_dataset_path[3])
+    if len(args.data_seg) > 1:   # we're given a segment from the buffer
+        end_trans = int(args.data_seg[1])
     logger.log(f'selecting transitions {start_trans} to {end_trans} for the evaluation')
     dataset = {k: v[start_trans:end_trans] for k, v in replay_buffer._buffer.items()}
     critic_path = args.trained_critic_path or ctxt.snapshot_dir
