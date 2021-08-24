@@ -36,6 +36,8 @@ def parse_cmd_line():
 
     parser.add_argument('--n_epochs',type=int,help='number of epochs to train the uw critic',default=800000)
     parser.add_argument('--intc',action='store_true',help='use internal critic')
+    parser.add_argument('--ope', action='store_true',
+                        help='if set, train external critic on target dataset')
     parser.add_argument('-c', '--trained_critic_path', help='Path to a pretrained critic to continue training',
                         default='', type=str)
 
@@ -544,7 +546,7 @@ def eval_policy_with_uw_critic(policy,dataset,critic,device):
     return value
 
 
-def load_or_train_critic_old(policy,dataset,env_spec,device,critic_dir,n_epochs=120000):
+def load_or_train_critic_on_tgt(policy,dataset,env_spec,device,critic_dir,n_epochs=120000):
     critic_file_name = os.path.join(critic_dir, 'critic.pkl')
     if os.path.exists(critic_file_name):
         logger.log(f'loading critic from {critic_file_name}')
@@ -644,10 +646,14 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
         value = eval_policy_with_internal_critic(policy,dataset,critic,device)
     else: # use uw critic
         logger.log('using uw critic')
-        critic = load_or_train_critic(policy,src_env,device,
-                                      critic_path,args.n_epochs)
-        # critic = load_or_train_critic_old(policy,dataset,env.spec,device,
-        #                               critic_path,args.n_epochs)
+        if args.ope:
+            logger.log('training on target dataset (ope)')
+            critic = load_or_train_critic_on_tgt(policy,dataset,env.spec,device,
+                                                 critic_path,args.n_epochs)
+        else:
+            logger.log('training on source domain data')
+            critic = load_or_train_critic(policy,src_env,device,
+                                          critic_path,args.n_epochs)
 
         value = eval_policy_with_uw_critic(policy, dataset, critic, device)
 
