@@ -454,7 +454,7 @@ class UncWgtCritic:
 ##########################################
 #region tools
 from garage.np import discount_cumsum
-def analyze_eval_episodes(batch, discount,critic=None):
+def analyze_eval_episodes(batch, discount,critic=None,device=None):
     """Evaluate the performance of an algorithm on a batch of episodes.
 
     Args:
@@ -472,7 +472,16 @@ def analyze_eval_episodes(batch, discount,critic=None):
     undiscounted_returns = []
     termination = []
     success = []
-    uw_critic = critic and hasattr(critic,'predict')
+    uw_critic = None
+    int_critic = None
+    if critic is not None:
+        if hasattr(critic,'predict'):
+            uw_critic = critic
+        else:
+            int_critic = critic
+    # uw_critic = critic and hasattr(critic,'predict')
+    s0_arr=[]
+    a0_arr=[]
     for eps in batch.split():
         returns.append(discount_cumsum(eps.rewards, discount))
         undiscounted_returns.append(sum(eps.rewards))
@@ -482,14 +491,22 @@ def analyze_eval_episodes(batch, discount,critic=None):
                     for step_type in eps.step_types)))
         if 'success' in eps.env_infos:
             success.append(float(eps.env_infos['success'].any()))
-        if uw_critic:
-            q0s.append(critic.predict(eps.observations[0],eps.actions[0]))
+        s0_arr.append(eps.observations[0])
+        a0_arr.append(eps.actions[0])
+    s0_arr = np.vstack(s0_arr)
+    a0_arr = np.vstack(a0_arr)
+    if uw_critic:
+        q0s=uw_critic.predict(s0_arr,a0_arr)
+    elif int_critic:
+        obs_tensor = torch.FloatTensor(s0_arr).to(device)
+        act_tensor = torch.FloatTensor(a0_arr).to(device)
+        q0s=int_critic(obs_tensor,act_tensor).data.cpu().numpy()
     average_discounted_return = np.mean([rtn[0] for rtn in returns])
     average_q0 = np.mean(q0s)
 
     logger.log(f'NumEpisodes: {len(returns)}')
     logger.log(f'AverageDiscountedReturn: {average_discounted_return}')
-    if uw_critic:
+    if uw_critic or int_critic:
         logger.log(f'Average Q(s0,a0): {average_q0}')
     logger.log(f'AverageReturn: {np.mean(undiscounted_returns)}')
     logger.log(f'StdReturn: {np.std(undiscounted_returns)}')
@@ -662,7 +679,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     logger.log('evaluating the policy on the target env for 100 episodes')
     discount = policy_snp['algo']._discount
     eval_episodes = obtain_evaluation_episodes(policy, env)
-    analyze_eval_episodes(eval_episodes,discount=discount,critic=critic)
+    analyze_eval_episodes(eval_episodes,discount=discount,critic=critic,device=device)
     logger.log('done.')
 
 
