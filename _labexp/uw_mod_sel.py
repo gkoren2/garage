@@ -19,7 +19,7 @@ from torch.nn import functional as F
 import cloudpickle
 from garage import rollout
 from tqdm import tqdm
-
+from sklearn.mixture import GaussianMixture
 
 DATA_FOLDER = os.path.join(os.path.expanduser('~'),'labexp_data')
 
@@ -34,11 +34,14 @@ def parse_cmd_line():
     parser.add_argument('-ds','--data_seg', type=str, nargs='+',
                         help='select data segment [start sample] [end sample]')
 
-    parser.add_argument('--n_epochs',type=int,help='number of epochs to train the uw critic',default=800000)
+    parser.add_argument('--n_epochs',type=int,help='number of epochs to train the external critic',default=800000)
+    parser.add_argument('--uwc',action='store_true',help='use external critic trained on source')
     parser.add_argument('--intc',action='store_true',help='use internal critic')
     parser.add_argument('--ope', action='store_true',
                         help='if set, train external critic on target dataset')
-    parser.add_argument('-c', '--trained_critic_path', help='Path to a pretrained critic to continue training',
+    parser.add_argument('--gmm', action='store_true',
+                        help='use gmm score')
+    parser.add_argument('-pc', '--trained_critic_path', help='Path to a pretrained critic',
                         default='', type=str)
 
     parser.add_argument('--gpuid',type=int,default=0,help='gpu id or -1 for cpu')
@@ -454,7 +457,7 @@ class UncWgtCritic:
 ##########################################
 #region tools
 from garage.np import discount_cumsum
-def analyze_eval_episodes(batch, discount,critic=None,device=None):
+def analyze_eval_episodes(batch, discount, critics=None, device=None):
     """Evaluate the performance of an algorithm on a batch of episodes.
 
     Args:
@@ -467,19 +470,13 @@ def analyze_eval_episodes(batch, discount,critic=None,device=None):
         numpy.ndarray: Undiscounted returns.
 
     """
+    if critics is None:
+        critics = {}
     returns = []
     q0s=[]
     undiscounted_returns = []
     termination = []
     success = []
-    uw_critic = None
-    int_critic = None
-    if critic is not None:
-        if hasattr(critic,'predict'):
-            uw_critic = critic
-        else:
-            int_critic = critic
-    # uw_critic = critic and hasattr(critic,'predict')
     s0_arr=[]
     a0_arr=[]
     for eps in batch.split():
@@ -493,36 +490,34 @@ def analyze_eval_episodes(batch, discount,critic=None,device=None):
             success.append(float(eps.env_infos['success'].any()))
         s0_arr.append(eps.observations[0])
         a0_arr.append(eps.actions[0])
+    average_discounted_return = np.mean([rtn[0] for rtn in returns])
+
+    # prepare for critics evaluations
     s0_arr = np.vstack(s0_arr)
     a0_arr = np.vstack(a0_arr)
-    if uw_critic:
-        q0s=uw_critic.predict(s0_arr,a0_arr)
-    elif int_critic:
-        obs_tensor = torch.FloatTensor(s0_arr).to(device)
-        act_tensor = torch.FloatTensor(a0_arr).to(device)
-        q0s=int_critic(obs_tensor,act_tensor).data.cpu().numpy()
-    average_discounted_return = np.mean([rtn[0] for rtn in returns])
-    average_q0 = np.mean(q0s)
-
+    critics_results={}
+    for cid,critic in critics.items():
+        if isinstance(critic,GaussianMixture):    # gmm
+            q0s=critic.score(s0_arr)
+        elif hasattr(critic,'predict'):       # external critic
+            q0s=critic.predict(s0_arr,a0_arr)
+        else:   # internal critic
+            obs_tensor = torch.FloatTensor(s0_arr).to(device)
+            act_tensor = torch.FloatTensor(a0_arr).to(device)
+            q0s = critic(obs_tensor, act_tensor).data.cpu().numpy()
+        critics_results.update({cid:np.mean(q0s)})
     logger.log(f'NumEpisodes: {len(returns)}')
-    logger.log(f'AverageDiscountedReturn: {average_discounted_return}')
-    if uw_critic or int_critic:
-        logger.log(f'Average Q(s0,a0): {average_q0}')
-    logger.log(f'AverageReturn: {np.mean(undiscounted_returns)}')
-    logger.log(f'StdReturn: {np.std(undiscounted_returns)}')
+    logger.log(f'Actual AverageDiscountedReturn: {average_discounted_return}')
+    logger.log(f'Critics V^(s0): {critics_results}')
+    # logger.log(f'AverageReturn: {np.mean(undiscounted_returns)}')
+    # logger.log(f'StdReturn: {np.std(undiscounted_returns)}')
 
-
-    # logger.log('MaxReturn', np.max(undiscounted_returns))
-    # logger.log('MinReturn', np.min(undiscounted_returns))
-    # logger.log('TerminationRate', np.mean(termination))
-    # if success:
-    #     logger.log('SuccessRate', np.mean(success))
     return
 
 #endregion
 ##########################################
 
-def eval_policy_with_internal_critic(policy,dataset,critic,device):
+def eval_policy_with_int_critic(policy,dataset,critic,device):
     logger.log('doing offline evaluation on evaluation dataset using internal critic ...')
     obs=dataset['observation']
     batch_size = 10000
@@ -540,9 +535,7 @@ def eval_policy_with_internal_critic(policy,dataset,critic,device):
     return value
 
 
-
-
-def eval_policy_with_uw_critic(policy,dataset,critic,device):
+def eval_policy_with_ext_critic(policy,dataset,critic,device):
     logger.log('doing offline evaluation on evaluation dataset using uncertainty weighted critic ...')
     obs=dataset['observation']
     batch_size = 10000
@@ -564,7 +557,62 @@ def eval_policy_with_uw_critic(policy,dataset,critic,device):
 
 
 def load_or_train_critic_on_tgt(policy,dataset,env_spec,device,critic_dir,n_epochs=120000):
-    critic_file_name = os.path.join(critic_dir, 'critic.pkl')
+    critic_file_name = os.path.join(critic_dir, 'ope_critic.pkl')
+    if os.path.exists(critic_file_name):
+        logger.log(f'loading critic from {critic_file_name}')
+        with open(critic_file_name, 'rb') as file:
+            critic = cloudpickle.load(file)
+    else:
+        logger.log('creating and training a critic')
+        critic = UncWgtCritic(env_spec,device,
+                              hidden_dims=[256,256],
+                              batch_size=1024,
+                              dropout_prob=0.2,
+                              log_interval=1000)
+        critic.fit(dataset,policy,n_epochs=n_epochs)
+        # save the critic
+        with open(critic_file_name, 'wb') as file:
+            cloudpickle.dump(critic, file)
+    return critic
+'''
+def fit_gmm_and_score(sim_embedding_dataset, real_embedding_dataset, sample_seq_with_length=None):
+    def get_random_sequences_no_replacement(array_size, seq_length):
+        arr = list(range(array_size))
+        random.shuffle(arr)
+        ret_list = []
+
+        while True:
+            ret_list.append(arr[:seq_length])
+            del arr[:seq_length]
+            if len(arr) < seq_length:
+                break
+
+        return ret_list
+
+    gmm = GaussianMixture(n_components=2, covariance_type='diag').fit(sim_embedding_dataset)
+
+    if sample_seq_with_length is None:
+        sample_seq_with_length = real_embedding_dataset.shape[0]
+
+    sequences = get_random_sequences_no_replacement(real_embedding_dataset.shape[0], sample_seq_with_length)
+    real_score = [gmm.score(real_embedding_dataset[seq]) for seq in sequences]
+
+    return real_score
+
+'''
+
+def train_eval_gmm(src_dataset,tgt_dataset):
+    src_embeddings = src_dataset['observation']
+    tgt_embeddings = tgt_dataset['observation']
+    gmm = GaussianMixture(n_components=2, covariance_type='diag').fit(
+        src_embeddings)
+    value = gmm.score(tgt_embeddings)
+    return value,gmm
+
+
+
+
+def load_or_train_critic(policy,dataset,env_spec,device,critic_file_name,n_epochs=120000):
     if os.path.exists(critic_file_name):
         logger.log(f'loading critic from {critic_file_name}')
         with open(critic_file_name, 'rb') as file:
@@ -582,38 +630,9 @@ def load_or_train_critic_on_tgt(policy,dataset,env_spec,device,critic_dir,n_epoc
             cloudpickle.dump(critic, file)
     return critic
 
-def load_or_train_critic(policy,env,device,critic_dir,n_epochs=120000):
-    critic_file_name = os.path.join(critic_dir, 'critic.pkl')
-    if os.path.exists(critic_file_name):
-        logger.log(f'loading critic from {critic_file_name}')
-        with open(critic_file_name, 'rb') as file:
-            critic = cloudpickle.load(file)
-    else:
-        logger.log('creating and training a critic')
-        critic = UncWgtCritic(env.spec,device,
-                              hidden_dims=[256,256],
-                              batch_size=1024,
-                              dropout_prob=0.2,
-                              log_interval=1000)
-        logger.log('collecting data from env to retrain critic with dropout')
-        rollout_buf = obtain_evaluation_episodes(policy, env,
-                                                     num_eps=200,
-                                                     max_episode_length=env.spec.max_episode_length,
-                                                     deterministic=False)
-        dataset = dict(observation=rollout_buf.observations,
-                           action=rollout_buf.actions,
-                           reward=rollout_buf.rewards[:,None],
-                           next_observation=rollout_buf.next_observations,
-                           terminal=rollout_buf.terminals[:,None])
-
-        critic.fit(dataset,policy,n_epochs=n_epochs)
-        # save the critic
-        with open(critic_file_name, 'wb') as file:
-            cloudpickle.dump(critic, file)
-    return critic
 
 @wrap_experiment(snapshot_mode='last')
-def unc_wgt_policy_sel(ctxt=None,args=None):
+def model_sel(ctxt=None,args=None):
     # args = parse_cmd_line()
     if args.gpuid>=0 and torch.cuda.is_available():
         set_gpu_mode(True,gpu_id=args.gpuid)
@@ -621,18 +640,10 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
         set_gpu_mode(False)
     device = global_device()
 
-    # exp_dir = os.path.join(exp_dir,'uw_mod_sel'+ '-' + time.strftime("%d-%m-%Y_%H-%M-%S"))
-
-    # snp_folder = os.path.join(exp_dir, 'sac_half_cheetah_vel')
-    # policies_itr = {'poor': 40, 'bad': 60, 'good': 160, 'expert': 460}
-    # working on gpu15
     policy_snp_folder = args.policies[0]
     dataset_snp_folder = args.val_dataset_path[0]
-    # policies_itr = {'poor': 60, 'bad': 80, 'good': 120, 'expert': 460}
 
     snapshotter = Snapshotter()
-    # policies = {k: snapshotter.load(snp_folder, itr=itr)['algo'].policy for
-    #             k, itr in policies_itr.items()}
 
     policy_itr = 'last' if len(args.policies) == 1 else int(args.policies[1])
     dataset_itr = 'last' if len(args.val_dataset_path) == 1 else \
@@ -645,6 +656,7 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     src_env = policy_snp['env']
     data_snapshot = snapshotter.load(os.path.expanduser(dataset_snp_folder), itr=dataset_itr)
     env = data_snapshot['env']
+    # generate the dataset from target domain
     replay_buffer = data_snapshot['algo'].replay_buffer
     # need to leave only the valid samples in the dataset
     n_trans_stored = replay_buffer.n_transitions_stored
@@ -655,31 +667,78 @@ def unc_wgt_policy_sel(ctxt=None,args=None):
     if len(args.data_seg) > 1:   # we're given a segment from the buffer
         end_trans = int(args.data_seg[1])
     logger.log(f'selecting transitions {start_trans} to {end_trans} for the evaluation')
-    dataset = {k: v[start_trans:end_trans] for k, v in replay_buffer._buffer.items()}
-    critic_path = args.trained_critic_path or ctxt.snapshot_dir
+    tgt_dataset = {k: v[start_trans:end_trans] for k, v in replay_buffer._buffer.items()}
+
+    critic_path = ctxt.snapshot_dir
+    eval_results={}
+    critics={}
+    src_dataset = None
+    if args.uwc or args.gmm:
+        logger.log('collecting data from source env')
+        rollout_buf = obtain_evaluation_episodes(policy, src_env,
+                                                 num_eps=200,
+                                                 max_episode_length=src_env.spec.max_episode_length,
+                                                 deterministic=False)
+
+        src_dataset = dict(observation=rollout_buf.observations,
+                       action=rollout_buf.actions,
+                       reward=rollout_buf.rewards[:, None],
+                       next_observation=rollout_buf.next_observations,
+                       terminal=rollout_buf.terminals[:, None])
+
     if args.intc:   # use internal critic
+        logger.log('\n \n' +'~'*30+'using internal critic'+'~'*30)
         logger.log('using internal critic')
-        critic = policy_snp['algo']._target_qf1.to(device)
-        value = eval_policy_with_internal_critic(policy,dataset,critic,device)
-    else: # use uw critic
-        logger.log('using uw critic')
-        if args.ope:
-            logger.log('training on target dataset (ope)')
-            critic = load_or_train_critic_on_tgt(policy,dataset,env.spec,device,
-                                                 critic_path,args.n_epochs)
+        int_critic = policy_snp['algo']._target_qf1.to(device)
+        value = eval_policy_with_int_critic(policy,tgt_dataset,int_critic,device)
+        eval_results.update({'intc':value})
+        critics.update({'int_critic':int_critic})
+    if args.uwc:    # train external uncertainty weighted critic on source
+        logger.log('\n \n' +'~' * 30+'using uw critic trained on source'+'~'*30)
+        critic_file_name = os.path.join(critic_path, 'uw_critic.pkl')
+        uwc_critic = load_or_train_critic(policy, src_dataset,src_env.spec, device,
+                                      critic_file_name, args.n_epochs)
+        value = eval_policy_with_ext_critic(policy, tgt_dataset, uwc_critic, device)
+        eval_results.update({'uwc':value})
+        critics.update({'uwc_critic': uwc_critic})
+    if args.ope: # train external uncertainty weighted critic on target
+        logger.log('\n \n' +'~' * 30 + 'training on target dataset (ope)'+ '~' * 30)
+        # logger.log('training on target dataset (ope)')
+        critic_file_name = os.path.join(critic_path, 'ope_critic.pkl')
+        ope_critic = load_or_train_critic(policy,tgt_dataset,env.spec,device,
+                                                 critic_file_name,args.n_epochs)
+
+        # ope_critic = load_or_train_critic_on_tgt(policy,tgt_dataset,env.spec,device,
+        #                                          critic_path,args.n_epochs)
+        value = eval_policy_with_ext_critic(policy, tgt_dataset, ope_critic, device)
+        eval_results.update({'ope': value})
+        critics.update({'ope_critic': ope_critic})
+    if args.gmm:
+        logger.log(
+            '\n \n' + '~' * 30 + 'fit a gmm' + '~' * 30)
+        value,gmm = train_eval_gmm(src_dataset,tgt_dataset)
+        eval_results.update({'gmm': value})
+        critics.update({'gmm':gmm})
+
+    if args.trained_critic_path: # load pretrained critic
+        logger.log('\n \n' + '~' * 30 + f'loading critic from {args.trained_critic_path}'+ '~'*30)
+        if os.path.exists(args.trained_critic_path):
+            # logger.log(f'loading critic from {args.trained_critic_path}')
+            with open(args.trained_critic_path, 'rb') as file:
+                pret_critic = cloudpickle.load(file)
+            value = eval_policy_with_ext_critic(policy, tgt_dataset, pret_critic, device)
+            eval_results.update({'pret_critic':value})
+            critics.update({'pret_critic': pret_critic})
         else:
-            logger.log('training on source domain data')
-            critic = load_or_train_critic(policy,src_env,device,
-                                          critic_path,args.n_epochs)
-
-        value = eval_policy_with_uw_critic(policy, dataset, critic, device)
-
-    logger.log(f'the value of policy {os.path.basename(policy_snp_folder)}_itr{policy_itr} on dataset {os.path.basename(dataset_snp_folder)}_itr{dataset_itr} is {value}')
-
-    logger.log('evaluating the policy on the target env for 100 episodes')
+            logger.log(f'Error in loading critic from {args.trained_critic_path}')
+    logger.log('\n \n \n' +'~' * 70)
+    logger.log(f'values of policy {os.path.basename(policy_snp_folder)}_itr{policy_itr} on dataset {os.path.basename(dataset_snp_folder)}_itr{dataset_itr}:')
+    logger.log(f'offline evaluation (based on target dataset): {eval_results}')
+    logger.log('~'*50+'Ground truth results on 100 episodes from target env'+'~'*50)
     discount = policy_snp['algo']._discount
     eval_episodes = obtain_evaluation_episodes(policy, env)
-    analyze_eval_episodes(eval_episodes,discount=discount,critic=critic,device=device)
+    analyze_eval_episodes(eval_episodes,discount=discount,critics=critics,device=device)
+
     logger.log('done.')
 
 
@@ -698,7 +757,7 @@ if __name__ == '__main__':
     # use_existing_dir = self.use_existing_dir,
     # x_axis = self.x_axis,
     # signature = self.__signature__
-    options = {'name':'uw_mod_sel'}
-    unc_wgt_policy_sel(options, args=args)
+    options = {'name':'mod_sel'}
+    model_sel(options, args=args)
 
     sys.path.remove(proj_root_dir)
