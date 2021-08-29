@@ -335,6 +335,7 @@ class UncWgtCritic:
                  layer_norm = False,
                  dropout_prob=0.2,
                  activation='relu',
+                 n_sim=1000,
                  log_interval=10):
         self.env_spec = env_spec
         self.lr = lr
@@ -344,7 +345,7 @@ class UncWgtCritic:
         self.discount=discount
         self.device=device
         self.batch_size = batch_size
-
+        self.n_sim = n_sim
         if activation=='relu':
             act_layer=nn.ReLU
         elif activation=='tanh':
@@ -444,12 +445,13 @@ class UncWgtCritic:
 
         return self
 
-    def predict(self,obs,action,n_sim=1000):
+    def predict(self,obs,action,n_sim=None):
+        n_samples=n_sim or self.n_sim
         self.critic.train()
         obs_tensor = torch.FloatTensor(obs).to(self.device)
         action_tensor = torch.FloatTensor(action).to(self.device)
         obs_action = torch.cat([obs_tensor, action_tensor], dim=-1)
-        Q_preds=np.array([self.critic(obs_action).data.cpu().numpy() for _ in range(n_sim)]).squeeze()
+        Q_preds=np.array([self.critic(obs_action).data.cpu().numpy() for _ in range(n_samples)]).squeeze()
         q_mean = np.mean(Q_preds,axis=0)
         q_std = np.std(Q_preds,axis=0)
         return q_mean,q_std
@@ -556,24 +558,6 @@ def eval_policy_with_ext_critic(policy,dataset,critic,device):
     return value
 
 
-def load_or_train_critic_on_tgt(policy,dataset,env_spec,device,critic_dir,n_epochs=120000):
-    critic_file_name = os.path.join(critic_dir, 'ope_critic.pkl')
-    if os.path.exists(critic_file_name):
-        logger.log(f'loading critic from {critic_file_name}')
-        with open(critic_file_name, 'rb') as file:
-            critic = cloudpickle.load(file)
-    else:
-        logger.log('creating and training a critic')
-        critic = UncWgtCritic(env_spec,device,
-                              hidden_dims=[256,256],
-                              batch_size=1024,
-                              dropout_prob=0.2,
-                              log_interval=1000)
-        critic.fit(dataset,policy,n_epochs=n_epochs)
-        # save the critic
-        with open(critic_file_name, 'wb') as file:
-            cloudpickle.dump(critic, file)
-    return critic
 '''
 def fit_gmm_and_score(sim_embedding_dataset, real_embedding_dataset, sample_seq_with_length=None):
     def get_random_sequences_no_replacement(array_size, seq_length):
@@ -622,7 +606,9 @@ def load_or_train_critic(policy,dataset,env_spec,device,critic_file_name,n_epoch
         critic = UncWgtCritic(env_spec,device,
                               hidden_dims=[256,256],
                               batch_size=1024,
-                              dropout_prob=0.2,
+                              # dropout_prob=0.2,
+                              dropout_prob=0,
+                              n_sim=2,
                               log_interval=1000)
         critic.fit(dataset,policy,n_epochs=n_epochs)
         # save the critic
