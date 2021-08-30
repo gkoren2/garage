@@ -608,6 +608,9 @@ def load_or_train_critic(policy,dataset,env_spec,device,critic_file_name,n_epoch
                               batch_size=1024,
                               # dropout_prob=0.2,
                               dropout_prob=0,
+                              lr=3e-4,
+                              critic_target_update_freq=1000,
+                              critic_tau=.99,
                               n_sim=2,
                               log_interval=1000)
         critic.fit(dataset,policy,n_epochs=n_epochs)
