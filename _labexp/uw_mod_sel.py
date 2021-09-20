@@ -459,7 +459,24 @@ class UncWgtCritic:
 ##########################################
 #region tools
 from garage.np import discount_cumsum
-def analyze_eval_episodes(batch, discount, critics=None, device=None):
+intermed_activation={}
+def get_activation(name):
+    def hook(model,input,output):
+        intermed_activation[name] = output.detach()
+    return hook
+
+def get_policy_embedding(data,policy,device):
+    penult_layer = policy._module._shared_mean_log_std_network._layers[
+        -1].linear
+    # penult_layer=policy._module._shared_mean_log_std_network._layers[-1].non_linearity
+    penult_layer.register_forward_hook(get_activation('penult'))
+    logger.log(f'evaluating gmm on embedding of penultimate {penult_layer}')
+    ot = torch.FloatTensor(data).to(device)
+    _ = policy.forward(ot)
+    return intermed_activation['penult'].cpu().numpy()
+
+
+def analyze_eval_episodes(batch, discount, critics=None, policy=None,device=None):
     """Evaluate the performance of an algorithm on a batch of episodes.
 
     Args:
@@ -493,13 +510,14 @@ def analyze_eval_episodes(batch, discount, critics=None, device=None):
         s0_arr.append(eps.observations[0])
         a0_arr.append(eps.actions[0])
     average_discounted_return = np.mean([rtn[0] for rtn in returns])
-
     # prepare for critics evaluations
     s0_arr = np.vstack(s0_arr)
     a0_arr = np.vstack(a0_arr)
     critics_results={}
     for cid,critic in critics.items():
         if isinstance(critic,GaussianMixture):    # gmm
+            if policy: # get policy embedding
+                s0_arr = get_policy_embedding(s0_arr, policy, device)
             q0s=critic.score(s0_arr)
         elif hasattr(critic,'predict'):       # external critic
             q0s=critic.predict(s0_arr,a0_arr)
@@ -585,9 +603,16 @@ def fit_gmm_and_score(sim_embedding_dataset, real_embedding_dataset, sample_seq_
 
 '''
 
-def train_eval_gmm(src_dataset,tgt_dataset):
-    src_embeddings = src_dataset['observation']
-    tgt_embeddings = tgt_dataset['observation']
+
+
+def train_eval_gmm(src_dataset,tgt_dataset,policy=None,device=None):
+    if policy:      # if we have a policy, extract the embedding
+        src_embeddings = get_policy_embedding(src_dataset['observation'],policy,device)
+        # extract tgt embeddings
+        tgt_embeddings = get_policy_embedding(tgt_dataset['observation'],policy,device)
+    else:
+        src_embeddings = src_dataset['observation']
+        tgt_embeddings = tgt_dataset['observation']
     gmm = GaussianMixture(n_components=2, covariance_type='diag').fit(
         src_embeddings)
     value = gmm.score(tgt_embeddings)
@@ -705,7 +730,7 @@ def model_sel(ctxt=None,args=None):
     if args.gmm:
         logger.log(
             '\n \n' + '~' * 30 + 'fit a gmm' + '~' * 30)
-        value,gmm = train_eval_gmm(src_dataset,tgt_dataset)
+        value,gmm = train_eval_gmm(src_dataset,tgt_dataset,policy,device)
         eval_results.update({'gmm': value})
         critics.update({'gmm':gmm})
 
@@ -726,7 +751,7 @@ def model_sel(ctxt=None,args=None):
     logger.log('~'*50+'Ground truth results on 100 episodes from target env'+'~'*50)
     discount = policy_snp['algo']._discount
     eval_episodes = obtain_evaluation_episodes(policy, env)
-    analyze_eval_episodes(eval_episodes,discount=discount,critics=critics,device=device)
+    analyze_eval_episodes(eval_episodes,discount=discount,critics=critics,device=device,policy=policy)
 
     logger.log('done.')
 
